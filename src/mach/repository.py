@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import subprocess
 from pathlib import Path
 
 from mach.models import MachPaths
@@ -7,12 +9,25 @@ from mach.models import MachPaths
 
 def resolve_paths(repo_root: Path | None = None) -> MachPaths:
     root = (repo_root or Path.cwd()).resolve()
-    mach_dir = root / ".mach"
+    
+    try:
+        git_dir_raw = subprocess.check_output(
+            ["git", "rev-parse", "--absolute-git-dir"],
+            cwd=str(root),
+            stderr=subprocess.DEVNULL,
+            text=True
+        ).strip()
+        mach_dir = Path(git_dir_raw) / "mach"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        mach_dir = root / ".mach"
+
+    root_hash = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:8]
+
     return MachPaths(
         repo_root=root,
         mach_dir=mach_dir,
         config_path=mach_dir / "config",
-        head_path=mach_dir / "HEAD",
+        head_path=mach_dir / f"HEAD_{root_hash}",
         sessions_dir=mach_dir / "sessions",
         db_path=mach_dir / "index.db",
         pack_dir=mach_dir / "pack",

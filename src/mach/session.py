@@ -55,10 +55,27 @@ class SessionStore:
 
         return self._create_session_unlocked(agent=agent, task_desc=task_desc)
 
-    def _create_session_unlocked(self, agent: str = "unknown", task_desc: str | None = None) -> dict[str, Any]:
+    def _check_concurrent_sessions(self, pre_commit: str | None) -> None:
+        if not pre_commit:
+            return
+        try:
+            with connect(self.paths.db_path) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) as c FROM sessions WHERE ended_at IS NULL AND pre_commit = ?",
+                    (pre_commit,)
+                ).fetchone()
+                if row and row["c"] > 0:
+                    print(f"\033[93mWarning\033[0m: There are {row['c']} other active AI session(s) modifying this same commit state concurrently.")
+        except Exception:
+            pass  # fail gracefully if db not ready
+
+    def _create_session_unlocked(self, agent: str = "unknown", task_desc: str | None = None, agent_session_id: str | None = None) -> dict[str, Any]:
         session_id = f"ses_{uuid.uuid4().hex}"
         session_dir = self.paths.sessions_dir / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
+
+        pre_commit = head_commit(self.paths.repo_root)
+        self._check_concurrent_sessions(pre_commit)
 
         meta = {
             "id": session_id,
@@ -66,10 +83,11 @@ class SessionStore:
             "ended_at": None,
             "agent": agent,
             "branch": current_branch(self.paths.repo_root),
-            "pre_commit": head_commit(self.paths.repo_root),
+            "pre_commit": pre_commit,
             "post_commit": None,
             "task_desc": task_desc,
             "status": "active",
+            "agent_session_id": agent_session_id,
         }
         write_json(session_dir / "meta.json", meta)
         write_json(session_dir / "merkle.sig", {"root": None, "steps": 0})
@@ -193,7 +211,7 @@ class SessionStore:
         with connect(self.paths.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT id, started_at, ended_at, agent, branch, pre_commit, post_commit,
+                SELECT id, started_at, ended_at, agent, agent_session_id, branch, pre_commit, post_commit,
                        step_count, risk_count, synced_at
                 FROM sessions
                 ORDER BY started_at DESC
@@ -213,6 +231,99 @@ class SessionStore:
             "merkle": read_json(session_dir / "merkle.sig"),
             "steps": read_jsonl(session_dir / "steps.jsonl"),
         }
+
+    def resume_branch(self, branch: str | None = None) -> dict[str, Any]:
+        self.init_repo()
+        with file_lock(self.paths.lock_path):
+            target_branch = branch or current_branch(self.paths.repo_root)
+            with connect(self.paths.db_path) as conn:
+                row = conn.execute(
+                    "SELECT id FROM sessions WHERE branch = ? ORDER BY started_at DESC LIMIT 1",
+                    (target_branch,)
+                ).fetchone()
+            
+            if not row:
+                raise MachError(f"No previous sessions found for branch: {target_branch}")
+            
+            session_id = row["id"]
+            meta = self.read_session_meta(session_id)
+            if meta["status"] != "active":
+                meta["status"] = "active"
+                meta["ended_at"] = None
+                self._write_session_meta(meta)
+                self._upsert_session_index(meta, self._step_count(session_id), self._risk_count(session_id))
+            
+            self.paths.head_path.write_text(session_id, encoding="utf-8")
+            
+            agent = meta.get("agent")
+            agent_sid = meta.get("agent_session_id")
+            if agent:
+                mappings = self._read_agent_sessions()
+                key = self._agent_session_key(agent, agent_sid)
+                mappings[key] = session_id
+                self._write_agent_sessions(mappings)
+                
+            return {
+                "status": "resumed",
+                "session_id": session_id,
+                "agent_session_id": agent_sid,
+                "agent": agent,
+                "metadata": meta
+            }
+
+    def rewind(self, target: str) -> dict[str, Any]:
+        self.init_repo()
+        import subprocess
+        with file_lock(self.paths.lock_path):
+            active = self.get_active_session_id()
+            if not active:
+                raise MachError("No active session to rewind within.")
+                
+            try:
+                subprocess.check_call(
+                    ["git", "restore", "--source", target, "--", "."],
+                    cwd=str(self.paths.repo_root),
+                    stderr=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL
+                )
+            except subprocess.CalledProcessError:
+                raise MachError(f"Failed to rewind working directory to {target} (is it a valid commit/branch?)")
+                
+            payload = self._record_step_for_session_unlocked(active, {
+                "type": "system_action",
+                "content": f"User rewound workspace state to {target}",
+                "risk_level": "none",
+            })
+            return {"status": "rewound", "target": target, "step_recorded": payload}
+
+    def clean(self, max_days: int = 7) -> dict[str, Any]:
+        self.init_repo()
+        import shutil
+        with file_lock(self.paths.lock_path):
+            active = self.get_active_session_id()
+            cutoff = int(time()) - (max_days * 86400)
+            cleaned = []
+            
+            with connect(self.paths.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT id FROM sessions WHERE status != 'active' AND started_at < ? AND post_commit IS NULL",
+                    (cutoff,)
+                ).fetchall()
+                
+                for r in rows:
+                    sid = r["id"]
+                    if sid == active:
+                        continue
+                    sdir = self.paths.sessions_dir / sid
+                    if sdir.exists():
+                        shutil.rmtree(sdir)
+                    conn.execute("DELETE FROM risk_flags WHERE step_id IN (SELECT id FROM steps WHERE session_id=?)", (sid,))
+                    conn.execute("DELETE FROM file_changes WHERE step_id IN (SELECT id FROM steps WHERE session_id=?)", (sid,))
+                    conn.execute("DELETE FROM tools WHERE step_id IN (SELECT id FROM steps WHERE session_id=?)", (sid,))
+                    conn.execute("DELETE FROM steps WHERE session_id=?", (sid,))
+                    conn.execute("DELETE FROM sessions WHERE id=?", (sid,))
+                    cleaned.append(sid)
+            return {"cleaned": len(cleaned), "session_ids": cleaned}
 
     def on_commit(self) -> dict[str, Any] | None:
         config = self.read_config()
@@ -316,7 +427,7 @@ class SessionStore:
                 self.paths.head_path.write_text(session_id, encoding="utf-8")
                 return session_id
 
-        meta = self._create_session_unlocked(agent=agent, task_desc=task_desc)
+        meta = self._create_session_unlocked(agent=agent, task_desc=task_desc, agent_session_id=source_session_id)
         mappings[key] = meta["id"]
         self._write_agent_sessions(mappings)
         return meta["id"]
@@ -390,8 +501,8 @@ class SessionStore:
                 """
                 INSERT INTO sessions (
                   id, started_at, ended_at, agent, branch, pre_commit, post_commit,
-                  step_count, risk_count, synced_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  step_count, risk_count, synced_at, agent_session_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   started_at=excluded.started_at,
                   ended_at=excluded.ended_at,
@@ -401,7 +512,8 @@ class SessionStore:
                   post_commit=excluded.post_commit,
                   step_count=excluded.step_count,
                   risk_count=excluded.risk_count,
-                  synced_at=excluded.synced_at
+                  synced_at=excluded.synced_at,
+                  agent_session_id=excluded.agent_session_id
                 """,
                 (
                     meta["id"],
@@ -414,6 +526,7 @@ class SessionStore:
                     step_count,
                     risk_count,
                     None,
+                    meta.get("agent_session_id"),
                 ),
             )
 

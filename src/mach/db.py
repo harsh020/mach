@@ -20,6 +20,7 @@ def init_db(db_path: Path) -> None:
               started_at INTEGER,
               ended_at INTEGER,
               agent TEXT,
+              agent_session_id TEXT,
               branch TEXT,
               pre_commit TEXT,
               post_commit TEXT,
@@ -76,6 +77,10 @@ def init_db(db_path: Path) -> None:
             );
             """
         )
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN agent_session_id TEXT")
+        except sqlite3.OperationalError:
+            pass
 
 
 def reset_db(db_path: Path) -> None:

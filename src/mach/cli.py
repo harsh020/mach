@@ -167,6 +167,31 @@ def fsck_command(_: argparse.Namespace) -> None:
     emit(store.fsck())
 
 
+def rewind_command(args: argparse.Namespace) -> None:
+    store = SessionStore()
+    emit(store.rewind(target=args.target))
+
+
+def resume_command(args: argparse.Namespace) -> None:
+    store = SessionStore()
+    emit(store.resume_branch(branch=args.branch))
+
+
+def clean_command(args: argparse.Namespace) -> None:
+    store = SessionStore()
+    emit(store.clean(max_days=int(args.max_days)))
+
+
+def doctor_command(_: argparse.Namespace) -> None:
+    store = SessionStore()
+    fsck_res = store.fsck()
+    tracker = TrackerService()
+    if tracker.status().get("running"):
+        tracker.stop_daemon()
+    t_res = tracker.start_daemon()
+    emit({"fsck": fsck_res, "tracker": t_res})
+
+
 def ingest_event_command(args: argparse.Namespace) -> None:
     ingest = EventInboxService()
     step: dict[str, object] = {
@@ -326,6 +351,21 @@ def main() -> None:
 
     fsck_parser = subparsers.add_parser("fsck", help="Rebuild the SQLite index from JSONL logs.")
     fsck_parser.set_defaults(handler=fsck_command)
+
+    rewind_parser = subparsers.add_parser("rewind", help="Rewind workspace to target commit in append-only mode.")
+    rewind_parser.add_argument("target", help="Commit hash or branch name to rewind to.")
+    rewind_parser.set_defaults(handler=rewind_command)
+
+    resume_parser = subparsers.add_parser("resume", help="Resume latest session on active branch.")
+    resume_parser.add_argument("branch", nargs="?", help="Specific branch to resume on.")
+    resume_parser.set_defaults(handler=resume_command)
+
+    clean_parser = subparsers.add_parser("clean", help="Clean orphaned AI sessions.")
+    clean_parser.add_argument("--max-days", default=7, type=int, help="Delete sessions older than max days without a commit.")
+    clean_parser.set_defaults(handler=clean_command)
+
+    doctor_parser = subparsers.add_parser("doctor", help="Fix broken sessions and restart trackers.")
+    doctor_parser.set_defaults(handler=doctor_command)
 
     on_commit_parser = subparsers.add_parser("on-commit", help="Close active session after a commit.")
     on_commit_parser.set_defaults(handler=on_commit_command)

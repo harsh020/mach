@@ -66,6 +66,9 @@ class GeminiHookAdapter(HookAdapter):
             )
         if event_name == "SessionStart":
             return self._step(session_id, "reasoning", "Gemini session started", "{}")
+        if event_name == "UserPromptSubmit":
+            prompt = first_present(payload, "prompt") or nested_first_present(payload, ("hook_input", "prompt"))
+            return self._step(session_id, "input", str(prompt or ""), "{}")
         if event_name == "BeforeAgent":
             messages = nested_first_present(payload, ("llm_request", "messages")) or []
             prompt = latest_user_message(messages) if isinstance(messages, list) else None

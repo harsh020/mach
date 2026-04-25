@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import pydoc
 from pathlib import Path
 
 from mach.hooks import HookManager
@@ -13,34 +14,34 @@ from mach.tracker import TrackerService
 def emit(payload: object) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
-def format_sessions_list(sessions: list[dict]) -> None:
+def format_sessions_list(sessions: list[dict]) -> str:
     if not sessions:
-        print("No sessions found.")
-        return
-    print("\n\033[1mTracking Sessions\033[0m\n")
+        return "No sessions found.\n"
+    out = ["\n\033[1mTracking Sessions\033[0m\n"]
     for s in sessions:
         status = s.get("status") or ("active" if s.get("ended_at") is None else "ended")
         color = "\033[92m" if status == "active" else "\033[90m"
         agent = s.get("agent", "unknown")
         sid = s.get("id")
         commits = f"{str(s.get('pre_commit', ''))[:7]} -> {str(s.get('post_commit', ''))[:7] if s.get('post_commit') else 'pending'}"
-        print(f"{color}* {sid}\033[0m")
-        print(f"  Agent:  {agent}")
-        print(f"  Status: {status}")
-        print(f"  Branch: {s.get('branch')} ({commits})")
-        print(f"  Steps:  {s.get('step_count', 0)}")
-        print()
+        out.append(f"{color}* {sid}\033[0m")
+        out.append(f"  Agent:  {agent}")
+        out.append(f"  Status: {status}")
+        out.append(f"  Branch: {s.get('branch')} ({commits})")
+        out.append(f"  Steps:  {s.get('step_count', 0)}\n")
+    return "\n".join(out)
 
-def format_session_steps(data: dict, oneline: bool = False) -> None:
+def format_session_steps(data: dict, oneline: bool = False) -> str:
     import time
     meta = data["meta"]
     steps = data["steps"]
     
+    out = []
     if not oneline:
-        print(f"\n\033[1;34mSESSION: {meta.get('id')}\033[0m")
-        print(f"Agent: {meta.get('agent')} | Branch: {meta.get('branch')} | Status: {meta.get('status', 'ended')}")
-        print(f"Pre-commit: {meta.get('pre_commit')} | Post-commit: {meta.get('post_commit')}\n")
-        print("\033[1mSession Timeline:\033[0m\n")
+        out.append(f"\n\033[1;34mSESSION: {meta.get('id')}\033[0m")
+        out.append(f"Agent: {meta.get('agent')} | Branch: {meta.get('branch')} | Status: {meta.get('status', 'ended')}")
+        out.append(f"Pre-commit: {meta.get('pre_commit')} | Post-commit: {meta.get('post_commit')}\n")
+        out.append("\033[1mSession Timeline:\033[0m\n")
     
     coalesced = []
     for step in steps:
@@ -54,7 +55,8 @@ def format_session_steps(data: dict, oneline: bool = False) -> None:
                 "ts": step["ts"],
                 "type": "tool", 
                 "name": tool.get("name"), 
-                "content": tool.get("content", "")
+                "content": tool.get("content", ""),
+                "file_changes": step.get("file_changes")
             })
             continue
             
@@ -92,6 +94,15 @@ def format_session_steps(data: dict, oneline: bool = False) -> None:
             
         if stype == "tool":
             text = f"Executed tool: {c.get('name')}"
+            fc = c.get("file_changes")
+            if fc:
+                text += "\n    File Changes:"
+                for change in fc:
+                    action = change.get('action', 'modified')
+                    fp = change.get('file_path', 'unknown')
+                    hunks = change.get('hunks', [])
+                    hunk_str = f" (Hunks: {hunks})" if hunks else ""
+                    text += f"\n      - [{action.upper()}] {fp}{hunk_str}"
         else:
             text = str(c.get('content', '')).strip()
             first_line = text.split('\n')[0][:80]
@@ -102,23 +113,26 @@ def format_session_steps(data: dict, oneline: bool = False) -> None:
             text = first_line
 
         if oneline:
-            print(f"\033[33m{sid[:7]}\033[0m [{stype.upper()}] {text}")
+            out.append(f"\033[33m{sid[:7]}\033[0m [{stype.upper()}] {text}")
         else:
-            print(f"\033[33mstep {sid}\033[0m")
-            print(f"Agent:  {agent_name}")
-            print(f"Type:   {stype.upper()}")
-            print(f"Date:   {ts_str}")
-            print()
-            print(f"    {text}")
-            print()
+            out.append(f"\033[33mstep {sid}\033[0m")
+            out.append(f"Agent:  {agent_name}")
+            out.append(f"Type:   {stype.upper()}")
+            out.append(f"Date:   {ts_str}")
+            out.append("")
+            out.append(f"    {text}")
+            out.append("")
+            
+    return "\n".join(out)
 
-def format_session_details(data: dict) -> None:
+def format_session_details(data: dict) -> str:
     meta = data["meta"]
     steps = data["steps"]
     
-    print(f"\n\033[1;34mSESSION: {meta.get('id')}\033[0m")
-    print(f"Agent: {meta.get('agent')} | Branch: {meta.get('branch')} | Status: {meta.get('status', 'ended')}")
-    print(f"Pre-commit: {meta.get('pre_commit')} | Post-commit: {meta.get('post_commit')}\n")
+    out = []
+    out.append(f"\n\033[1;34mSESSION: {meta.get('id')}\033[0m")
+    out.append(f"Agent: {meta.get('agent')} | Branch: {meta.get('branch')} | Status: {meta.get('status', 'ended')}")
+    out.append(f"Pre-commit: {meta.get('pre_commit')} | Post-commit: {meta.get('post_commit')}\n")
     
     coalesced = []
     for step in steps:
@@ -127,7 +141,11 @@ def format_session_details(data: dict) -> None:
         tool = step.get("tool")
         
         if tool:
-            coalesced.append({"type": "tool", "content": f"Used tool '{tool.get('name')}': {tool.get('content', '')}"})
+            coalesced.append({
+                "type": "tool", 
+                "content": f"Used tool '{tool.get('name')}': {tool.get('content', '')}",
+                "file_changes": step.get("file_changes")
+            })
             continue
             
         if not coalesced:
@@ -144,18 +162,31 @@ def format_session_details(data: dict) -> None:
         text = str(c["content"]).strip()
         if not text:
             continue
+            
+        fc = c.get("file_changes")
+        if fc:
+            text += "\n\nFile Changes:"
+            for change in fc:
+                action = change.get('action', 'modified')
+                fp = change.get('file_path', 'unknown')
+                hunks = change.get('hunks', [])
+                hunk_str = f" (Hunks: {hunks})" if hunks else ""
+                text += f"\n  - [{action.upper()}] {fp}{hunk_str}"
+                
         if stype == "input":
-            print(f"\033[1;32m> USER\033[0m\n{text}\n")
+            out.append(f"\033[1;32m> USER\033[0m\n{text}\n")
         elif stype == "reasoning":
-            print(f"\033[90m> REASONING ({meta.get('agent')})\n{text}\033[0m\n")
+            out.append(f"\033[90m> REASONING ({meta.get('agent')})\n{text}\033[0m\n")
         elif stype == "output":
-            print(f"\033[1;36m> OUTPUT ({meta.get('agent')})\033[0m\n{text}\n")
+            out.append(f"\033[1;36m> OUTPUT ({meta.get('agent')})\033[0m\n{text}\n")
         elif stype == "system_action":
-            print(f"\033[1;33m> SYSTEM\033[0m\n{text}\n")
+            out.append(f"\033[1;33m> SYSTEM\033[0m\n{text}\n")
         elif stype == "tool":
-            print(f"\033[1;35m> TOOL 🛠️\033[0m\n{text}\n")
+            out.append(f"\033[1;35m> TOOL 🛠️\033[0m\n{text}\n")
         else:
-            print(f"\033[1;37m> {stype.upper()}\033[0m\n{text}\n")
+            out.append(f"\033[1;37m> {stype.upper()}\033[0m\n{text}\n")
+            
+    return "\n".join(out)
 
 
 def init_command(_: argparse.Namespace) -> None:
@@ -290,15 +321,15 @@ def log_command(args: argparse.Namespace) -> None:
         if getattr(args, "json", False):
             emit(data)
         elif getattr(args, "content", False):
-            format_session_details(data)
+            pydoc.pager(format_session_details(data))
         else:
-            format_session_steps(data, oneline=getattr(args, "oneline", False))
+            pydoc.pager(format_session_steps(data, oneline=getattr(args, "oneline", False)))
     else:
         sessions = store.list_sessions()
         if getattr(args, "json", False):
             emit(sessions)
         else:
-            format_sessions_list(sessions)
+            pydoc.pager(format_sessions_list(sessions))
 
 
 def show_command(args: argparse.Namespace) -> None:
@@ -307,7 +338,7 @@ def show_command(args: argparse.Namespace) -> None:
     if getattr(args, "json", False):
         emit(data)
     else:
-        format_session_details(data)
+        pydoc.pager(format_session_details(data))
 
 
 def verify_command(args: argparse.Namespace) -> None:

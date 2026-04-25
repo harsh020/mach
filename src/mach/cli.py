@@ -65,12 +65,12 @@ def format_session_steps(data: dict, oneline: bool = False, patch: bool = False)
                 "id": step["id"],
                 "ts": step["ts"],
                 "type": stype, 
-                "content": content
+                "content": content or ""
             })
         else:
             last = coalesced[-1]
             if last["type"] == stype and "tool" not in last:
-                last["content"] += content
+                last["content"] = (last.get("content") or "") + (content or "")
                 last["id"] = step["id"]
                 last["ts"] = step["ts"]
             else:
@@ -78,7 +78,7 @@ def format_session_steps(data: dict, oneline: bool = False, patch: bool = False)
                     "id": step["id"],
                     "ts": step["ts"],
                     "type": stype, 
-                    "content": content
+                    "content": content or ""
                 })
                 
     for c in reversed(coalesced):
@@ -153,13 +153,13 @@ def format_session_details(data: dict, patch: bool = False) -> str:
             continue
             
         if not coalesced:
-            coalesced.append({"type": stype, "content": content})
+            coalesced.append({"type": stype, "content": content or ""})
         else:
             last = coalesced[-1]
             if last["type"] == stype and "tool" not in last:
-                last["content"] += content
+                last["content"] = (last.get("content") or "") + (content or "")
             else:
-                coalesced.append({"type": stype, "content": content})
+                coalesced.append({"type": stype, "content": content or ""})
                 
     for c in coalesced:
         stype = c["type"]

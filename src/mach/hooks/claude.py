@@ -12,6 +12,7 @@ from mach.hooks.helpers import (
     read_json_file,
     strip_matching_commands,
     write_json_file,
+    extract_tool_details,
 )
 
 
@@ -110,19 +111,24 @@ class ClaudeHookAdapter(HookAdapter):
         )
 
     def _tool_result(self, session_id: Any, payload: dict[str, Any], event_name: str) -> HookDispatchResult:
-        tool_name = first_present(payload, "tool_name", "tool")
+        tool_name = str(first_present(payload, "tool_name", "tool") or "unknown")
         tool_input = first_present(payload, "tool_input", "tool_arguments", "arguments")
         tool_result = first_present(payload, "tool_result", "result", "error")
-        content = f"{event_name}: {tool_name or 'unknown tool'}"
+        content = f"{event_name}: {tool_name}"
+        
+        category, file_changes = extract_tool_details(self.repo_root, tool_name, tool_input)
+        
         step: dict[str, Any] = {
             "type": "tool",
             "content": content,
             "tool": {
-                "name": str(tool_name or "unknown"),
-                "category": "exec",
+                "name": tool_name,
+                "category": category,
                 "content": str(tool_input or ""),
             },
         }
+        if file_changes:
+            step["file_changes"] = file_changes
         if tool_result is not None:
             step["tool_result"] = tool_result
         return HookDispatchResult(

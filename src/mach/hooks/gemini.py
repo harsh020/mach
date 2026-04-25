@@ -13,6 +13,7 @@ from mach.hooks.helpers import (
     read_json_file,
     strip_matching_commands,
     write_json_file,
+    extract_tool_details,
 )
 
 
@@ -76,18 +77,23 @@ class GeminiHookAdapter(HookAdapter):
             output = first_present(payload, "prompt_response", "response")
             return self._step(session_id, "output", str(output or ""), "{}")
         if event_name in {"BeforeTool", "AfterTool"}:
-            tool_name = first_present(payload, "tool_name", "toolName")
+            tool_name = str(first_present(payload, "tool_name", "toolName") or "unknown")
             tool_input = first_present(payload, "tool_input", "toolInput")
             tool_output = first_present(payload, "tool_output", "toolOutput", "result")
+            
+            category, file_changes = extract_tool_details(repo_root, tool_name, tool_input)
+            
             step: dict[str, Any] = {
                 "type": "tool",
-                "content": f"{event_name}: {tool_name or 'unknown tool'}",
+                "content": f"{event_name}: {tool_name}",
                 "tool": {
-                    "name": str(tool_name or "unknown"),
-                    "category": "exec",
+                    "name": tool_name,
+                    "category": category,
                     "content": str(tool_input or ""),
                 },
             }
+            if file_changes:
+                step["file_changes"] = file_changes
             if tool_output is not None:
                 step["tool_result"] = tool_output
             return HookDispatchResult(

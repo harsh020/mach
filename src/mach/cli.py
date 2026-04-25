@@ -13,6 +13,150 @@ from mach.tracker import TrackerService
 def emit(payload: object) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
+def format_sessions_list(sessions: list[dict]) -> None:
+    if not sessions:
+        print("No sessions found.")
+        return
+    print("\n\033[1mTracking Sessions\033[0m\n")
+    for s in sessions:
+        status = s.get("status") or ("active" if s.get("ended_at") is None else "ended")
+        color = "\033[92m" if status == "active" else "\033[90m"
+        agent = s.get("agent", "unknown")
+        sid = s.get("id")
+        commits = f"{str(s.get('pre_commit', ''))[:7]} -> {str(s.get('post_commit', ''))[:7] if s.get('post_commit') else 'pending'}"
+        print(f"{color}* {sid}\033[0m")
+        print(f"  Agent:  {agent}")
+        print(f"  Status: {status}")
+        print(f"  Branch: {s.get('branch')} ({commits})")
+        print(f"  Steps:  {s.get('step_count', 0)}")
+        print()
+
+def format_session_steps(data: dict, oneline: bool = False) -> None:
+    import time
+    meta = data["meta"]
+    steps = data["steps"]
+    
+    if not oneline:
+        print(f"\n\033[1;34mSESSION: {meta.get('id')}\033[0m")
+        print(f"Agent: {meta.get('agent')} | Branch: {meta.get('branch')} | Status: {meta.get('status', 'ended')}")
+        print(f"Pre-commit: {meta.get('pre_commit')} | Post-commit: {meta.get('post_commit')}\n")
+        print("\033[1mSession Timeline:\033[0m\n")
+    
+    coalesced = []
+    for step in steps:
+        stype = step.get("type", "unknown")
+        content = step.get("content", "")
+        tool = step.get("tool")
+        
+        if tool:
+            coalesced.append({
+                "id": step["id"],
+                "ts": step["ts"],
+                "type": "tool", 
+                "name": tool.get("name"), 
+                "content": tool.get("content", "")
+            })
+            continue
+            
+        if not coalesced:
+            coalesced.append({
+                "id": step["id"],
+                "ts": step["ts"],
+                "type": stype, 
+                "content": content
+            })
+        else:
+            last = coalesced[-1]
+            if last["type"] == stype and "tool" not in last:
+                last["content"] += content
+                last["id"] = step["id"]
+                last["ts"] = step["ts"]
+            else:
+                coalesced.append({
+                    "id": step["id"],
+                    "ts": step["ts"],
+                    "type": stype, 
+                    "content": content
+                })
+                
+    for c in reversed(coalesced):
+        stype = c["type"]
+        sid = c["id"].replace("step_", "")
+        ts_str = time.strftime('%a %b %d %H:%M:%S %Y %z', time.localtime(c["ts"]))
+        
+        agent_name = meta.get('agent', 'unknown')
+        if stype == "input":
+            agent_name = "user"
+        elif stype == "system_action":
+            agent_name = "system"
+            
+        if stype == "tool":
+            text = f"Executed tool: {c.get('name')}"
+        else:
+            text = str(c.get('content', '')).strip()
+            first_line = text.split('\n')[0][:80]
+            if len(text) > len(first_line) or len(text) > 80:
+                first_line += "..."
+            if not first_line:
+                first_line = "(empty)"
+            text = first_line
+
+        if oneline:
+            print(f"\033[33m{sid[:7]}\033[0m [{stype.upper()}] {text}")
+        else:
+            print(f"\033[33mstep {sid}\033[0m")
+            print(f"Agent:  {agent_name}")
+            print(f"Type:   {stype.upper()}")
+            print(f"Date:   {ts_str}")
+            print()
+            print(f"    {text}")
+            print()
+
+def format_session_details(data: dict) -> None:
+    meta = data["meta"]
+    steps = data["steps"]
+    
+    print(f"\n\033[1;34mSESSION: {meta.get('id')}\033[0m")
+    print(f"Agent: {meta.get('agent')} | Branch: {meta.get('branch')} | Status: {meta.get('status', 'ended')}")
+    print(f"Pre-commit: {meta.get('pre_commit')} | Post-commit: {meta.get('post_commit')}\n")
+    
+    coalesced = []
+    for step in steps:
+        stype = step.get("type", "unknown")
+        content = step.get("content", "")
+        tool = step.get("tool")
+        
+        if tool:
+            coalesced.append({"type": "tool", "content": f"Used tool '{tool.get('name')}': {tool.get('content', '')}"})
+            continue
+            
+        if not coalesced:
+            coalesced.append({"type": stype, "content": content})
+        else:
+            last = coalesced[-1]
+            if last["type"] == stype and "tool" not in last:
+                last["content"] += content
+            else:
+                coalesced.append({"type": stype, "content": content})
+                
+    for c in coalesced:
+        stype = c["type"]
+        text = str(c["content"]).strip()
+        if not text:
+            continue
+        if stype == "input":
+            print(f"\033[1;32m> USER\033[0m\n{text}\n")
+        elif stype == "reasoning":
+            print(f"\033[90m> REASONING ({meta.get('agent')})\n{text}\033[0m\n")
+        elif stype == "output":
+            print(f"\033[1;36m> OUTPUT ({meta.get('agent')})\033[0m\n{text}\n")
+        elif stype == "system_action":
+            print(f"\033[1;33m> SYSTEM\033[0m\n{text}\n")
+        elif stype == "tool":
+            print(f"\033[1;35m> TOOL 🛠️\033[0m\n{text}\n")
+        else:
+            print(f"\033[1;37m> {stype.upper()}\033[0m\n{text}\n")
+
 
 def init_command(_: argparse.Namespace) -> None:
     store = SessionStore()
@@ -139,14 +283,31 @@ def session_end(args: argparse.Namespace) -> None:
     emit(store.end_session(session_id=args.session_id))
 
 
-def log_command(_: argparse.Namespace) -> None:
+def log_command(args: argparse.Namespace) -> None:
     store = SessionStore()
-    emit(store.list_sessions())
+    if hasattr(args, "session_id") and args.session_id:
+        data = store.show_session(session_id=args.session_id)
+        if getattr(args, "json", False):
+            emit(data)
+        elif getattr(args, "content", False):
+            format_session_details(data)
+        else:
+            format_session_steps(data, oneline=getattr(args, "oneline", False))
+    else:
+        sessions = store.list_sessions()
+        if getattr(args, "json", False):
+            emit(sessions)
+        else:
+            format_sessions_list(sessions)
 
 
 def show_command(args: argparse.Namespace) -> None:
     store = SessionStore()
-    emit(store.show_session(session_id=args.session_id))
+    data = store.show_session(session_id=args.session_id)
+    if getattr(args, "json", False):
+        emit(data)
+    else:
+        format_session_details(data)
 
 
 def verify_command(args: argparse.Namespace) -> None:
@@ -338,11 +499,16 @@ def main() -> None:
     session_end_parser.add_argument("session_id", nargs="?")
     session_end_parser.set_defaults(handler=session_end)
 
-    log_parser = subparsers.add_parser("log", help="List known sessions.")
+    log_parser = subparsers.add_parser("log", help="List known sessions or view a specific session.")
+    log_parser.add_argument("session_id", nargs="?", help="Specific session ID to view.")
+    log_parser.add_argument("--json", action="store_true", help="Output raw JSON.")
+    log_parser.add_argument("--content", action="store_true", help="Show full content transcript instead of summary.")
+    log_parser.add_argument("--oneline", action="store_true", help="Format steps as a single line.")
     log_parser.set_defaults(handler=log_command)
 
     show_parser = subparsers.add_parser("show", help="Show a session.")
-    show_parser.add_argument("session_id", nargs="?")
+    show_parser.add_argument("session_id", nargs="?", help="Session ID to show.")
+    show_parser.add_argument("--json", action="store_true", help="Output raw JSON.")
     show_parser.set_defaults(handler=show_command)
 
     verify_parser = subparsers.add_parser("verify", help="Verify Merkle integrity.")
@@ -454,6 +620,10 @@ def main() -> None:
     track_run_parser.add_argument("--repo-root", default=".")
     track_run_parser.add_argument("--once", action="store_true")
     track_run_parser.set_defaults(handler=track_run_command)
+
+    # Alias `mach session <id>` to `mach show <id>` implicitly.
+    if len(sys.argv) >= 3 and sys.argv[1] == "session" and sys.argv[2] not in ("start", "end", "-h", "--help"):
+        sys.argv[1] = "show"
 
     try:
         args = parser.parse_args()

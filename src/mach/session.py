@@ -452,6 +452,9 @@ class SessionStore:
         prev_step_id = existing_steps[-1]["id"] if existing_steps else None
         step_num = len(existing_steps) + 1
 
+        config = self.read_config()
+        store_content = config.get("store_content", ["input"])
+
         payload = dict(step_dict)
         payload.setdefault("id", f"step_{uuid.uuid4().hex}")
         payload["session_id"] = session_id
@@ -460,6 +463,11 @@ class SessionStore:
         payload.setdefault("type", "output")
         payload.setdefault("content", "")
         payload["content_hash"] = hash_payload({"content": payload["content"]})
+        
+        step_type = payload["type"]
+        if step_type != "system_action" and step_type not in store_content:
+            payload["content"] = None
+
         payload.setdefault("caused_by", [prev_step_id] if prev_step_id else [])
         payload.setdefault("risk_level", "none")
 
@@ -467,6 +475,8 @@ class SessionStore:
         if tool_payload:
             tool_payload = dict(tool_payload)
             tool_payload["content_hash"] = hash_payload({"content": tool_payload.get("content", "")})
+            if "tool" not in store_content:
+                tool_payload["content"] = None
             payload["tool"] = tool_payload
 
         append_jsonl(steps_path, payload)

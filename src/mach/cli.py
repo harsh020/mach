@@ -266,6 +266,8 @@ def configure_command(args: argparse.Namespace) -> None:
         updates["idle_timeout_sec"] = None if args.idle_timeout_sec == "none" else int(args.idle_timeout_sec)
     if args.poll_interval_sec is not None:
         updates["poll_interval_sec"] = float(args.poll_interval_sec)
+    if args.store_content is not None:
+        updates["store_content"] = [t.strip() for t in args.store_content.split(",") if t.strip()]
 
     hook_agents = list(current.get("hook_agents") or [])
     if args.hook_agents is not None:
@@ -522,6 +524,7 @@ def main() -> None:
     configure_parser.add_argument("--hook-agents")
     configure_parser.add_argument("--add-agent", action="append")
     configure_parser.add_argument("--remove-agent", action="append")
+    configure_parser.add_argument("--store-content", help="Comma-separated step types to store content for (e.g. input,reasoning,tool,output)")
     configure_parser.add_argument("--apply", action="store_true", help="Apply current config to hooks and tracker after updating.")
     configure_parser.add_argument("--refresh-hooks", action="store_true", help="Reinstall managed hooks after updating config.")
     configure_parser.set_defaults(handler=configure_command)

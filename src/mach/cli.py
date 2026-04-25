@@ -31,7 +31,7 @@ def format_sessions_list(sessions: list[dict]) -> str:
         out.append(f"  Steps:  {s.get('step_count', 0)}\n")
     return "\n".join(out)
 
-def format_session_steps(data: dict, oneline: bool = False) -> str:
+def format_session_steps(data: dict, oneline: bool = False, patch: bool = False) -> str:
     import time
     meta = data["meta"]
     steps = data["steps"]
@@ -95,14 +95,18 @@ def format_session_steps(data: dict, oneline: bool = False) -> str:
         if stype == "tool":
             text = f"Executed tool: {c.get('name')}"
             fc = c.get("file_changes")
-            if fc:
-                text += "\n    File Changes:"
+            if fc and patch:
                 for change in fc:
-                    action = change.get('action', 'modified')
                     fp = change.get('file_path', 'unknown')
+                    name = Path(fp).name
+                    text += f"\n\n    --- a/{name}"
+                    text += f"\n    +++ b/{name}"
                     hunks = change.get('hunks', [])
-                    hunk_str = f" (Hunks: {hunks})" if hunks else ""
-                    text += f"\n      - [{action.upper()}] {fp}{hunk_str}"
+                    for h in hunks:
+                        start = h.get('from', 0)
+                        end = h.get('to', 0)
+                        lines = max(1, end - start + 1)
+                        text += f"\n    @@ -{start},{lines} +{start},{lines} @@"
         else:
             text = str(c.get('content', '')).strip()
             first_line = text.split('\n')[0][:80]
@@ -125,7 +129,7 @@ def format_session_steps(data: dict, oneline: bool = False) -> str:
             
     return "\n".join(out)
 
-def format_session_details(data: dict) -> str:
+def format_session_details(data: dict, patch: bool = False) -> str:
     meta = data["meta"]
     steps = data["steps"]
     
@@ -164,14 +168,18 @@ def format_session_details(data: dict) -> str:
             continue
             
         fc = c.get("file_changes")
-        if fc:
-            text += "\n\nFile Changes:"
+        if fc and patch:
             for change in fc:
-                action = change.get('action', 'modified')
                 fp = change.get('file_path', 'unknown')
+                name = Path(fp).name
+                text += f"\n\n  --- a/{name}"
+                text += f"\n  +++ b/{name}"
                 hunks = change.get('hunks', [])
-                hunk_str = f" (Hunks: {hunks})" if hunks else ""
-                text += f"\n  - [{action.upper()}] {fp}{hunk_str}"
+                for h in hunks:
+                    start = h.get('from', 0)
+                    end = h.get('to', 0)
+                    lines = max(1, end - start + 1)
+                    text += f"\n  @@ -{start},{lines} +{start},{lines} @@"
                 
         if stype == "input":
             out.append(f"\033[1;32m> USER\033[0m\n{text}\n")
@@ -321,9 +329,9 @@ def log_command(args: argparse.Namespace) -> None:
         if getattr(args, "json", False):
             emit(data)
         elif getattr(args, "content", False):
-            pydoc.pager(format_session_details(data))
+            pydoc.pager(format_session_details(data, patch=getattr(args, "patch", False)))
         else:
-            pydoc.pager(format_session_steps(data, oneline=getattr(args, "oneline", False)))
+            pydoc.pager(format_session_steps(data, oneline=getattr(args, "oneline", False), patch=getattr(args, "patch", False)))
     else:
         sessions = store.list_sessions()
         if getattr(args, "json", False):
@@ -338,7 +346,7 @@ def show_command(args: argparse.Namespace) -> None:
     if getattr(args, "json", False):
         emit(data)
     else:
-        pydoc.pager(format_session_details(data))
+        pydoc.pager(format_session_details(data, patch=getattr(args, "patch", False)))
 
 
 def verify_command(args: argparse.Namespace) -> None:
@@ -535,11 +543,13 @@ def main() -> None:
     log_parser.add_argument("--json", action="store_true", help="Output raw JSON.")
     log_parser.add_argument("--content", action="store_true", help="Show full content transcript instead of summary.")
     log_parser.add_argument("--oneline", action="store_true", help="Format steps as a single line.")
+    log_parser.add_argument("--patch", "-p", action="store_true", help="Show file changes and hunks.")
     log_parser.set_defaults(handler=log_command)
 
     show_parser = subparsers.add_parser("show", help="Show a session.")
     show_parser.add_argument("session_id", nargs="?", help="Session ID to show.")
     show_parser.add_argument("--json", action="store_true", help="Output raw JSON.")
+    show_parser.add_argument("--patch", "-p", action="store_true", help="Show file changes and hunks.")
     show_parser.set_defaults(handler=show_command)
 
     verify_parser = subparsers.add_parser("verify", help="Verify Merkle integrity.")

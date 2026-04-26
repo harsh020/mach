@@ -50,36 +50,36 @@ def format_session_steps(data: dict, oneline: bool = False, patch: bool = False)
         tool = step.get("tool")
         
         if tool:
-            coalesced.append({
-                "id": step["id"],
-                "ts": step["ts"],
-                "type": "tool", 
-                "name": tool.get("name"), 
-                "content": tool.get("content", ""),
-                "file_changes": step.get("file_changes")
-            })
-            continue
-            
-        if not coalesced:
-            coalesced.append({
-                "id": step["id"],
-                "ts": step["ts"],
-                "type": stype, 
-                "content": content or ""
-            })
-        else:
-            last = coalesced[-1]
-            if last["type"] == stype and "tool" not in last:
-                last["content"] = (last.get("content") or "") + (content or "")
-                last["id"] = step["id"]
-                last["ts"] = step["ts"]
+            tool_name = tool.get("name")
+            # Coalesce consecutive identical tool calls (e.g. repeated workspace_observer)
+            if coalesced and coalesced[-1]["type"] == "tool" and coalesced[-1].get("name") == tool_name:
+                coalesced[-1]["id"] = step["id"]
+                coalesced[-1]["ts"] = step["ts"]
+                coalesced[-1]["count"] = coalesced[-1].get("count", 1) + 1
             else:
                 coalesced.append({
                     "id": step["id"],
                     "ts": step["ts"],
-                    "type": stype, 
-                    "content": content or ""
+                    "type": "tool",
+                    "name": tool_name,
+                    "content": tool.get("content", ""),
+                    "file_changes": step.get("file_changes")
                 })
+            continue
+
+        # Coalesce consecutive same-type non-tool steps
+        if coalesced and coalesced[-1]["type"] == stype and coalesced[-1]["type"] != "tool":
+            last = coalesced[-1]
+            last["content"] = (last.get("content") or "") + (content or "")
+            last["id"] = step["id"]
+            last["ts"] = step["ts"]
+        else:
+            coalesced.append({
+                "id": step["id"],
+                "ts": step["ts"],
+                "type": stype,
+                "content": content or ""
+            })
                 
     for c in reversed(coalesced):
         stype = c["type"]
@@ -93,7 +93,9 @@ def format_session_steps(data: dict, oneline: bool = False, patch: bool = False)
             agent_name = "system"
             
         if stype == "tool":
-            text = f"Executed tool: {c.get('name')}"
+            count = c.get("count", 1)
+            count_str = f" ×{count}" if count > 1 else ""
+            text = f"Executed tool: {c.get('name')}{count_str}"
             fc = c.get("file_changes")
             if fc and patch:
                 for change in fc:
@@ -145,21 +147,23 @@ def format_session_details(data: dict, patch: bool = False) -> str:
         tool = step.get("tool")
         
         if tool:
-            coalesced.append({
-                "type": "tool", 
-                "content": f"Used tool '{tool.get('name')}': {tool.get('content', '')}",
-                "file_changes": step.get("file_changes")
-            })
-            continue
-            
-        if not coalesced:
-            coalesced.append({"type": stype, "content": content or ""})
-        else:
-            last = coalesced[-1]
-            if last["type"] == stype and "tool" not in last:
-                last["content"] = (last.get("content") or "") + (content or "")
+            tool_name = tool.get("name")
+            if coalesced and coalesced[-1]["type"] == "tool" and coalesced[-1].get("name") == tool_name:
+                coalesced[-1]["count"] = coalesced[-1].get("count", 1) + 1
             else:
-                coalesced.append({"type": stype, "content": content or ""})
+                coalesced.append({
+                    "type": "tool",
+                    "name": tool_name,
+                    "content": f"Used tool '{tool_name}': {tool.get('content', '')}",
+                    "file_changes": step.get("file_changes")
+                })
+            continue
+
+        # Coalesce consecutive same-type non-tool steps
+        if coalesced and coalesced[-1]["type"] == stype and coalesced[-1]["type"] != "tool":
+            coalesced[-1]["content"] = (coalesced[-1].get("content") or "") + (content or "")
+        else:
+            coalesced.append({"type": stype, "content": content or ""})
                 
     for c in coalesced:
         stype = c["type"]

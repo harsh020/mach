@@ -96,6 +96,17 @@ def latest_user_message(messages: list[dict[str, Any]]) -> str | None:
                             text_parts.append(str(text))
                 if text_parts:
                     return "\n".join(text_parts)
+            # Gemini CLI format: message has 'parts' list of {text: ...} dicts
+            parts = message.get("parts")
+            if isinstance(parts, list):
+                text_parts = []
+                for item in parts:
+                    if isinstance(item, dict):
+                        text = item.get("text")
+                        if text:
+                            text_parts.append(str(text))
+                if text_parts:
+                    return "\n".join(text_parts)
     return None
 
 def extract_tool_details(repo_root: Path, tool_name: str, tool_input: Any) -> tuple[str, list[dict[str, Any]]]:

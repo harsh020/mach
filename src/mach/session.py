@@ -250,8 +250,15 @@ class SessionStore:
             if meta["status"] != "active":
                 meta["status"] = "active"
                 meta["ended_at"] = None
+                meta["post_commit"] = None
                 self._write_session_meta(meta)
                 self._upsert_session_index(meta, self._step_count(session_id), self._risk_count(session_id))
+                # Record a system step to mark the resume event
+                self._record_step_for_session_unlocked(session_id, {
+                    "type": "system_action",
+                    "content": f"Session resumed on branch {target_branch}",
+                    "risk_level": "none",
+                })
             
             self.paths.head_path.write_text(session_id, encoding="utf-8")
             

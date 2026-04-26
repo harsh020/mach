@@ -165,8 +165,12 @@ def log_command(args: argparse.Namespace) -> None:
             pydoc.pager(format_session_steps(data, oneline=getattr(args, "oneline", False), patch=getattr(args, "patch", False)))
     else:
         sessions = store.list_sessions()
+        import sys
         if getattr(args, "json", False):
             emit(sessions)
+        elif sys.stdout.isatty() and not getattr(args, "no_tui", False):
+            from mach.tui import run_tui
+            run_tui(store)
         else:
             pydoc.pager(format_sessions_list(sessions))
 
@@ -376,6 +380,7 @@ def main() -> None:
     log_parser.add_argument("--content", action="store_true", help="Show full content transcript instead of summary.")
     log_parser.add_argument("--oneline", action="store_true", help="Format steps as a single line.")
     log_parser.add_argument("--patch", "-p", action="store_true", help="Show file changes and hunks.")
+    log_parser.add_argument("--no-tui", action="store_true", help="Use static pager output instead of interactive TUI.")
     log_parser.set_defaults(handler=log_command)
 
     show_parser = subparsers.add_parser("show", help="Show a session.")

@@ -8,6 +8,10 @@ version = "0.1.0"
 description = "Local-first execution tracking for AI agents."
 readme = "README.md"
 requires-python = ">=3.9"
+dependencies = [
+    "textual>=0.79.0",
+    "rich>=13.0.0",
+]
 
 [project.scripts]
 mach = "mach.cli:main"

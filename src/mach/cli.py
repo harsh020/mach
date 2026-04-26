@@ -168,7 +168,7 @@ def log_command(args: argparse.Namespace) -> None:
         import sys
         if getattr(args, "json", False):
             emit(sessions)
-        elif sys.stdout.isatty() and not getattr(args, "no_tui", False):
+        elif sys.stdout.isatty() and not getattr(args, "no_tui", False) and store.get_config().get("use_tui", True):
             from mach.tui import run_tui
             run_tui(store)
         else:

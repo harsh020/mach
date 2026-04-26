@@ -6,6 +6,7 @@ DEFAULT_CONFIG = {
     "idle_timeout_sec": None,
     "commit_closes_session": False,
     "auto_tracking": True,
+    "use_tui": True,
     "hook_agents": ["claude", "codex", "copilot", "cursor", "gemini"],
     "poll_interval_sec": 2,
     "ignore_paths": [

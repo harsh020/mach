@@ -1,7 +1,7 @@
 """
 mach.tui — Premium interactive terminal dashboard.
 
-Dark, information-dense, git-native aesthetic.
+Native terminal aesthetics.
 Split-screen: sessions (left) | timeline (right). Enter → step detail modal.
 """
 from __future__ import annotations
@@ -61,18 +61,14 @@ def _coalesce(steps: list[dict]) -> list[dict]:
         content = step.get("content", "")
         if tool:
             name = tool.get("name")
-            if out and out[-1]["type"] == "tool" and out[-1].get("name") == name:
-                out[-1].update(id=step["id"], ts=step.get("ts", 0),
-                               count=out[-1].get("count", 1) + 1)
-            else:
-                out.append(dict(
-                    id=step["id"], ts=step.get("ts", 0), type="tool",
-                    name=name, category=tool.get("category", "exec"),
-                    content=_strip(tool.get("content") or ""),
-                    file_changes=step.get("file_changes"), count=1,
-                ))
+            out.append(dict(
+                id=step["id"], ts=step.get("ts", 0), type="tool",
+                name=name, category=tool.get("category", "exec"),
+                content=_strip(tool.get("content") or ""),
+                file_changes=step.get("file_changes"), count=1,
+            ))
             continue
-        if out and out[-1]["type"] == stype and stype != "tool":
+        if stype == "reasoning" and out and out[-1]["type"] == "reasoning":
             out[-1]["content"] = (out[-1].get("content") or "") + (content or "")
             out[-1].update(id=step["id"], ts=step.get("ts", 0))
         else:
@@ -81,21 +77,21 @@ def _coalesce(steps: list[dict]) -> list[dict]:
     return out
 
 
-# visual config
+# visual config using native terminal colors
 STEP_ICON = {
-    "input":         ("▸", "bold #7dcfff"),
-    "reasoning":     ("◆", "bold #bb9af7"),
-    "tool":          ("⬡", "bold #e0af68"),
-    "output":        ("◀", "bold #9ece6a"),
-    "system_action": ("·", "dim #565f89"),
+    "input":         ("▸", "bold cyan"),
+    "reasoning":     ("◆", "bold magenta"),
+    "tool":          ("⬡", "bold yellow"),
+    "output":        ("◀", "bold green"),
+    "system_action": ("·", "dim"),
 }
 TOOL_CAT_ICON = {"write": "✎", "read": "≡", "search": "⌕", "exec": "❯"}
 AGENT_COLOR = {
-    "gemini":  "#4fc3f7",
-    "claude":  "#ff9e64",
-    "codex":   "#9ece6a",
-    "copilot": "#bb9af7",
-    "cursor":  "#7aa2f7",
+    "gemini":  "cyan",
+    "claude":  "yellow",
+    "codex":   "green",
+    "copilot": "magenta",
+    "cursor":  "blue",
 }
 
 
@@ -114,14 +110,14 @@ class StepDetail(ModalScreen[None]):
     #modal-outer {
         width: 85%;
         height: 82%;
-        background: #1a1b26;
-        border: round #414868;
+        background: $surface;
+        border: round $primary;
         padding: 0;
     }
     #modal-header {
         height: auto;
-        background: #16161e;
-        border-bottom: solid #414868;
+        background: $panel;
+        border-bottom: solid $primary;
         padding: 1 2;
     }
     #modal-body {
@@ -130,8 +126,8 @@ class StepDetail(ModalScreen[None]):
     }
     #modal-footer-bar {
         height: 1;
-        background: #16161e;
-        border-top: solid #414868;
+        background: $panel;
+        border-top: solid $primary;
         padding: 0 2;
         content-align: left middle;
     }
@@ -148,7 +144,7 @@ class StepDetail(ModalScreen[None]):
         icon, ic = STEP_ICON.get(stype, ("·", "dim"))
         label = stype.upper()
         ts = s.get("ts", 0)
-        acol = AGENT_COLOR.get(self.agent.lower(), "#c0caf5")
+        acol = AGENT_COLOR.get(self.agent.lower(), "white")
 
         with Vertical(id="modal-outer"):
             # ── Header ──
@@ -157,13 +153,13 @@ class StepDetail(ModalScreen[None]):
                 h.append(f"  {icon} ", style=ic)
                 h.append(f"{label}", style=f"bold {ic.split()[-1] if ' ' in ic else ic}")
                 h.append("   ", style="dim")
-                h.append("step:", style="dim #565f89")
-                h.append(f" {s.get('id', '?')}", style="#7aa2f7")
-                h.append("   agent:", style="dim #565f89")
+                h.append("step:", style="dim")
+                h.append(f" {s.get('id', '?')}", style="blue")
+                h.append("   agent:", style="dim")
                 h.append(f" {self.agent}", style=f"bold {acol}")
                 if ts:
-                    h.append(f"   {_abs_ts(ts)}", style="dim #565f89")
-                    h.append(f"  ({_rel(ts)})", style="dim #414868")
+                    h.append(f"   {_abs_ts(ts)}", style="dim")
+                    h.append(f"  ({_rel(ts)})", style="dim")
                 yield Static(h)
 
                 if stype == "tool":
@@ -171,11 +167,11 @@ class StepDetail(ModalScreen[None]):
                     ci = TOOL_CAT_ICON.get(cat, "·")
                     count = s.get("count", 1)
                     t2 = Text()
-                    t2.append(f"  {ci} ", style="#e0af68")
-                    t2.append(s.get("name", "?"), style="bold #e0af68")
-                    t2.append(f"  [{cat}]", style="dim #565f89")
+                    t2.append(f"  {ci} ", style="yellow")
+                    t2.append(s.get("name", "?"), style="bold yellow")
+                    t2.append(f"  [{cat}]", style="dim")
                     if count > 1:
-                        t2.append(f"  ×{count} calls", style="dim #ff9e64")
+                        t2.append(f"  ×{count} calls", style="dim yellow")
                     yield Static(t2)
 
             # ── Body ──
@@ -184,15 +180,15 @@ class StepDetail(ModalScreen[None]):
                 if content:
                     yield Static(Text(content))
                 else:
-                    yield Static(Text("  (no content stored — privacy policy redacted)", style="dim italic #565f89"))
+                    yield Static(Text("  (no content stored — privacy policy redacted)", style="dim italic"))
 
                 fc = s.get("file_changes")
                 if fc:
                     yield Static(Text(""))
                     sep = Text()
-                    sep.append("  ── ", style="dim #414868")
-                    sep.append("File Changes", style="bold #c0caf5")
-                    sep.append(f"  ({len(fc)} file{'s' if len(fc) != 1 else ''})", style="dim #565f89")
+                    sep.append("  ── ", style="dim")
+                    sep.append("File Changes", style="bold")
+                    sep.append(f"  ({len(fc)} file{'s' if len(fc) != 1 else ''})", style="dim")
                     yield Static(sep)
                     yield Static(Text(""))
                     for ch in fc:
@@ -200,26 +196,26 @@ class StepDetail(ModalScreen[None]):
                         fp = ch.get("file_path", "?")
                         added = ch.get("lines_added", 0) or 0
                         removed = ch.get("lines_removed", 0) or 0
-                        astyle = {"write": "#9ece6a", "read": "#7dcfff",
-                                  "delete": "#f7768e"}.get(action, "#565f89")
+                        astyle = {"write": "green", "read": "cyan",
+                                  "delete": "red"}.get(action, "dim")
                         line = Text()
                         line.append(f"  {action.upper():<6}", style=f"bold {astyle}")
-                        line.append(f"  {fp}", style="#c0caf5")
+                        line.append(f"  {fp}", style="white")
                         if added or removed:
-                            line.append(f"  +{added}", style="#9ece6a")
-                            line.append(f"  -{removed}", style="#f7768e")
+                            line.append(f"  +{added}", style="green")
+                            line.append(f"  -{removed}", style="red")
                         yield Static(line)
                         for h in ch.get("hunks", []):
                             hs, he = h.get("from", 0), h.get("to", 0)
                             hl = Text()
                             hl.append(f"        @@ -{hs},{max(1,he-hs+1)} +{hs},{max(1,he-hs+1)} @@",
-                                      style="#7dcfff")
+                                      style="cyan")
                             yield Static(hl)
 
             # ── Footer ──
             foot = Text()
-            foot.append("  ESC ", style="bold #e0af68")
-            foot.append("close", style="dim #565f89")
+            foot.append("  ESC ", style="bold yellow")
+            foot.append("close", style="dim")
             yield Static(foot, id="modal-footer-bar")
 
 
@@ -234,15 +230,15 @@ class MachApp(App):
     CSS = """
     /* ── Global ── */
     Screen {
-        background: #13131a;
+        background: transparent;
     }
 
     /* ── Top banner ── */
     #banner {
         dock: top;
         height: 3;
-        background: #16161e;
-        border-bottom: solid #414868;
+        background: transparent;
+        border-bottom: solid $primary;
         padding: 0 3;
         content-align: left middle;
     }
@@ -257,19 +253,19 @@ class MachApp(App):
         width: 36;
         min-width: 28;
         height: 1fr;
-        border-right: solid #414868;
-        background: #13131a;
+        border-right: solid $primary;
+        background: transparent;
     }
     #session-pane-title {
         height: 2;
-        background: #16161e;
-        border-bottom: solid #414868;
+        background: transparent;
+        border-bottom: solid $primary;
         padding: 0 2;
         content-align: left middle;
     }
     ListView {
         height: 1fr;
-        background: #13131a;
+        background: transparent;
         padding: 0;
         border: none;
     }
@@ -279,58 +275,53 @@ class MachApp(App):
     ListItem {
         height: 5;
         padding: 1 2;
-        border-bottom: solid #1e2030;
-        background: #13131a;
+        border-bottom: solid $surface-lighten-1;
+        background: transparent;
     }
     ListItem.--highlight {
-        background: #1e2030;
-        border-left: thick #7aa2f7;
+        background: $surface;
+        border-left: thick $accent;
     }
     ListItem:hover {
-        background: #1a1b26;
+        background: $surface;
     }
 
     /* ── Steps pane ── */
     #steps-pane {
         width: 1fr;
         height: 1fr;
-        background: #13131a;
+        background: transparent;
     }
     #steps-pane-title {
         height: 2;
-        background: #16161e;
-        border-bottom: solid #414868;
+        background: transparent;
+        border-bottom: solid $primary;
         padding: 0 2;
         content-align: left middle;
     }
     DataTable {
         height: 1fr;
-        background: #13131a;
-        color: #c0caf5;
+        background: transparent;
     }
     DataTable > .datatable--header {
-        background: #1e2030;
-        color: #7aa2f7;
+        background: transparent;
         text-style: bold;
     }
     DataTable > .datatable--cursor {
-        background: #283457;
-        color: #c0caf5;
+        background: $primary;
     }
     DataTable > .datatable--even-row {
-        background: #181825;
+        background: transparent;
     }
 
     /* ── Footer ── */
     Footer {
-        background: #16161e;
-        color: #565f89;
-        border-top: solid #414868;
+        background: transparent;
+        border-top: solid $primary;
         height: 1;
     }
     Footer > .footer--key {
-        background: #414868;
-        color: #c0caf5;
+        background: $primary;
     }
     """
 
@@ -351,11 +342,11 @@ class MachApp(App):
     def compose(self) -> ComposeResult:
         # Banner
         banner = Text()
-        banner.append("⬡ ", style="bold #7aa2f7")
-        banner.append("MACH", style="bold #c0caf5")
-        banner.append("  execution ledger", style="dim #565f89")
-        banner.append("   ·   ", style="dim #414868")
-        banner.append("audit-grade AI tracing", style="dim #565f89")
+        banner.append("⬡ ", style="bold blue")
+        banner.append("MACH", style="bold")
+        banner.append("  execution ledger", style="dim")
+        banner.append("   ·   ", style="dim")
+        banner.append("audit-grade AI tracing", style="dim")
         yield Static(banner, id="banner")
 
         with Horizontal(id="split"):
@@ -374,19 +365,19 @@ class MachApp(App):
 
     def _sessions_title(self) -> Text:
         t = Text()
-        t.append(" Sessions", style="bold #7aa2f7")
+        t.append(" Sessions", style="bold blue")
         if self.sessions:
-            t.append(f"  {len(self.sessions)}", style="dim #e0af68")
+            t.append(f"  {len(self.sessions)}", style="dim yellow")
         return t
 
     def _steps_title(self, label: str = "Timeline", count: int = 0,
                      sid: str = "") -> Text:
         t = Text()
-        t.append(" Timeline", style="bold #7aa2f7")
+        t.append(" Timeline", style="bold blue")
         if sid:
-            t.append(f"  {sid}", style="dim #565f89")
+            t.append(f"  {sid}", style="dim")
         if count:
-            t.append(f"  {count} steps", style="dim #e0af68")
+            t.append(f"  {count} steps", style="dim yellow")
         return t
 
     def on_mount(self) -> None:
@@ -413,25 +404,25 @@ class MachApp(App):
         n_steps = s.get("step_count", 0)
         started = s.get("started_at", 0)
         is_active = status == "active"
-        acol = AGENT_COLOR.get(agent.lower(), "#c0caf5")
+        acol = AGENT_COLOR.get(agent.lower(), "white")
 
         # Line 1: status bullet + short ID
         line1 = Text()
         line1.append("● " if is_active else "○ ",
-                      style="bold #9ece6a" if is_active else "dim #414868")
-        line1.append(sid, style="bold #c0caf5")
+                      style="bold green" if is_active else "dim")
+        line1.append(sid, style="bold")
 
         # Line 2: agent + branch
         line2 = Text()
         line2.append(agent, style=f"bold {acol}")
-        line2.append("  on ", style="dim #565f89")
-        line2.append(branch, style="#7dcfff")
+        line2.append("  on ", style="dim")
+        line2.append(branch, style="cyan")
 
         # Line 3: steps + time
         line3 = Text()
-        line3.append(f"{n_steps} steps", style="dim #565f89")
-        line3.append("  ·  ", style="dim #414868")
-        line3.append(_rel(started), style="dim #565f89")
+        line3.append(f"{n_steps} steps", style="dim")
+        line3.append("  ·  ", style="dim")
+        line3.append(_rel(started), style="dim")
 
         content = Text.assemble(line1, "\n", line2, "\n", line3)
         return ListItem(Static(content))
@@ -469,24 +460,23 @@ class MachApp(App):
                 cat = step.get("category", "exec")
                 ci = TOOL_CAT_ICON.get(cat, "·")
                 detail = Text()
-                detail.append(f"{ci} ", style="#e0af68")
-                detail.append(step.get("name", "?"), style="bold #e0af68")
+                detail.append(f"{ci} ", style="yellow")
+                detail.append(step.get("name", "?"), style="bold yellow")
                 tool_content = _strip(step.get("content") or "").strip().replace("\n", " ")
                 if tool_content:
                     detail.append("  ", style="dim")
                     detail.append(tool_content[:70] + "…" if len(tool_content) > 70
-                                  else tool_content, style="dim #565f89")
+                                  else tool_content, style="dim")
                 if count > 1:
-                    detail.append(f"  ×{count}", style="bold #ff9e64")
+                    detail.append(f"  ×{count}", style="bold yellow")
             else:
                 raw = _strip(step.get("content") or "").strip().replace("\n", " ")
                 if not raw:
-                    detail = Text("(redacted)", style="dim italic #414868")
+                    detail = Text("(redacted)", style="dim italic")
                 else:
-                    detail = Text(raw[:110] + "…" if len(raw) > 110 else raw,
-                                  style="#a9b1d6")
+                    detail = Text(raw[:110] + "…" if len(raw) > 110 else raw)
 
-            ts_cell = Text(_abs_ts(ts), style="dim #565f89") if ts else Text("")
+            ts_cell = Text(_abs_ts(ts), style="dim") if ts else Text("")
             tt.add_row(icon_cell, label_cell, detail, ts_cell)
 
     # ── Events ──

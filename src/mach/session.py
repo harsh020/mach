@@ -29,6 +29,11 @@ class SessionStore:
     def __init__(self, repo_root: Path | None = None) -> None:
         self.paths = resolve_paths(repo_root)
 
+    def get_config(self) -> dict:
+        if not self.paths.config_path.exists():
+            return DEFAULT_CONFIG
+        return merge_config(read_json(self.paths.config_path))
+
     def init_repo(self) -> Path:
         self.paths.mach_dir.mkdir(parents=True, exist_ok=True)
         self.paths.sessions_dir.mkdir(parents=True, exist_ok=True)

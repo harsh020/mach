@@ -6,8 +6,10 @@ Split-screen: sessions (left) | timeline (right). Enter → step detail modal.
 """
 from __future__ import annotations
 
+import os
 import re
 import time as _time
+from collections import Counter
 from typing import Any
 
 from textual import on
@@ -15,10 +17,8 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Label, ListItem, ListView, Static, Rule
+from textual.widgets import DataTable, Footer, ListItem, ListView, Static
 from rich.text import Text
-from rich.console import Console
-from rich.segment import Segment
 
 from mach.session import SessionStore
 
@@ -93,6 +93,69 @@ AGENT_COLOR = {
     "copilot": "magenta",
     "cursor":  "blue",
 }
+
+ACCENT_STYLES = {
+    "blue": ("blue", "bold blue"),
+    "cyan": ("cyan", "bold cyan"),
+    "green": ("green", "bold green"),
+    "yellow": ("yellow", "bold yellow"),
+    "magenta": ("magenta", "bold magenta"),
+}
+
+
+def _short_id(value: str, prefix: str, size: int = 12) -> str:
+    return value.replace(prefix, "")[:size]
+
+
+def _short_commit(value: str | None) -> str:
+    return (value or "?")[:7]
+
+
+def _count_file_changes(step: dict[str, Any]) -> int:
+    return len(step.get("file_changes") or [])
+
+
+def _session_status(session: dict[str, Any]) -> str:
+    return session.get("status") or ("active" if not session.get("ended_at") else "ended")
+
+
+def _accent_from_env() -> str:
+    override = os.environ.get("MACH_TUI_ACCENT", "").strip().lower()
+    if override in ACCENT_STYLES:
+        return override
+
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    if "apple_terminal" in term_program:
+        return "green"
+    if "vscode" in term_program:
+        return "blue"
+    if "warp" in term_program:
+        return "yellow"
+    if "wezterm" in term_program:
+        return "cyan"
+
+    if os.environ.get("KITTY_WINDOW_ID"):
+        return "magenta"
+    if os.environ.get("WT_SESSION"):
+        return "blue"
+    if os.environ.get("ITERM_PROFILE"):
+        return "cyan"
+    return "cyan"
+
+
+def _preview_text(step: dict[str, Any], width: int = 136) -> str:
+    if step.get("type") == "tool":
+        tool_bits = [
+            step.get("name", "?"),
+            str(step.get("content") or "").strip().replace("\n", " "),
+        ]
+        value = "  ".join(bit for bit in tool_bits if bit)
+    else:
+        value = str(step.get("content") or "").strip().replace("\n", " ")
+    value = _strip(value)
+    if not value:
+        return "(content redacted)"
+    return value if len(value) <= width else value[: width - 1] + "…"
 
 
 # ══════════════════════════════════════════════════════════
@@ -228,40 +291,49 @@ class MachApp(App):
     SUB_TITLE = "execution ledger"
 
     CSS = """
-    /* ── Global ── */
     Screen {
         background: transparent;
     }
-
-    /* ── Top banner ── */
-    #banner {
+    #hero {
         dock: top;
-        height: 3;
-        background: transparent;
-        border-bottom: solid $primary;
-        padding: 0 3;
+        height: 4;
+        border-bottom: tall $primary;
+        padding: 0 2;
+    }
+    #hero-left, #hero-right {
+        height: 4;
         content-align: left middle;
     }
-
-    /* ── Layout ── */
+    #hero-left {
+        width: 1fr;
+    }
+    #hero-right {
+        width: 38;
+        content-align: right middle;
+    }
+    #split {
+        margin: 1 0 0 0;
+    }
+    .pane-title {
+        height: 2;
+        padding: 0 1;
+        border-bottom: solid $primary;
+        content-align: left middle;
+    }
+    .subpanel {
+        height: auto;
+        border-top: solid $surface-lighten-1;
+        padding: 1 1 1 1;
+    }
     #split {
         height: 1fr;
     }
-
-    /* ── Session pane ── */
     #session-pane {
-        width: 36;
-        min-width: 28;
+        width: 42;
+        min-width: 34;
         height: 1fr;
-        border-right: solid $primary;
+        border-right: tall $primary;
         background: transparent;
-    }
-    #session-pane-title {
-        height: 2;
-        background: transparent;
-        border-bottom: solid $primary;
-        padding: 0 2;
-        content-align: left middle;
     }
     ListView {
         height: 1fr;
@@ -273,48 +345,38 @@ class MachApp(App):
         border: none;
     }
     ListItem {
-        height: 5;
-        padding: 1 2;
+        height: 6;
+        padding: 1 1;
         border-bottom: solid $surface-lighten-1;
         background: transparent;
     }
     ListItem.--highlight {
-        background: $surface;
+        background: $boost;
         border-left: thick $accent;
     }
     ListItem:hover {
-        background: $surface;
+        background: $boost;
     }
-
-    /* ── Steps pane ── */
     #steps-pane {
         width: 1fr;
         height: 1fr;
         background: transparent;
     }
-    #steps-pane-title {
-        height: 2;
-        background: transparent;
-        border-bottom: solid $primary;
-        padding: 0 2;
-        content-align: left middle;
-    }
     DataTable {
         height: 1fr;
         background: transparent;
+        padding: 0 1;
     }
     DataTable > .datatable--header {
         background: transparent;
         text-style: bold;
     }
     DataTable > .datatable--cursor {
-        background: $primary;
+        background: $boost;
     }
     DataTable > .datatable--even-row {
         background: transparent;
     }
-
-    /* ── Footer ── */
     Footer {
         background: transparent;
         border-top: solid $primary;
@@ -338,34 +400,33 @@ class MachApp(App):
         self.sessions: list[dict] = []
         self.steps: list[dict] = []
         self.agent = "unknown"
+        self.selected_session_id: str | None = None
+        self.accent_name = _accent_from_env()
+        self.accent, self.accent_bold = ACCENT_STYLES[self.accent_name]
 
     def compose(self) -> ComposeResult:
-        # Banner
-        banner = Text()
-        banner.append("⬡ ", style="bold blue")
-        banner.append("MACH", style="bold")
-        banner.append("  execution ledger", style="dim")
-        banner.append("   ·   ", style="dim")
-        banner.append("audit-grade AI tracing", style="dim")
-        yield Static(banner, id="banner")
+        with Horizontal(id="hero"):
+            yield Static(id="hero-left")
+            yield Static(id="hero-right")
 
         with Horizontal(id="split"):
-            # Left: sessions
             with Vertical(id="session-pane"):
-                yield Static(self._sessions_title(), id="session-pane-title")
+                yield Static(id="session-pane-title", classes="pane-title")
                 yield ListView(id="session-list")
+                yield Static(id="session-meta", classes="subpanel")
 
-            # Right: steps
             with Vertical(id="steps-pane"):
-                yield Static(self._steps_title(), id="steps-pane-title")
+                yield Static(id="steps-pane-title", classes="pane-title")
+                yield Static(id="steps-summary", classes="subpanel")
                 yield DataTable(id="steps-table", cursor_type="row",
                                 zebra_stripes=True, show_cursor=True)
+                yield Static(id="step-preview", classes="subpanel")
 
         yield Footer()
 
     def _sessions_title(self) -> Text:
         t = Text()
-        t.append(" Sessions", style="bold blue")
+        t.append(" Sessions", style=self.accent_bold)
         if self.sessions:
             t.append(f"  {len(self.sessions)}", style="dim yellow")
         return t
@@ -373,20 +434,134 @@ class MachApp(App):
     def _steps_title(self, label: str = "Timeline", count: int = 0,
                      sid: str = "") -> Text:
         t = Text()
-        t.append(" Timeline", style="bold blue")
+        t.append(f" {label}", style=self.accent_bold)
         if sid:
             t.append(f"  {sid}", style="dim")
         if count:
             t.append(f"  {count} steps", style="dim yellow")
         return t
 
+    def _header_title(self) -> Text:
+        active = sum(1 for session in self.sessions if _session_status(session) == "active")
+        agents = len({str(session.get("agent", "unknown")) for session in self.sessions}) if self.sessions else 0
+        repo = self.store.paths.repo_root.name or "."
+
+        t = Text()
+        t.append("⬡ ", style=self.accent_bold)
+        t.append("MACH", style="bold white")
+        t.append("  execution ledger", style="dim")
+        t.append("   ", style="dim")
+        t.append(repo, style="bold")
+        t.append("  ", style="dim")
+        t.append(f"{active} active", style="green")
+        t.append("  ", style="dim")
+        t.append(f"{len(self.sessions)} sessions", style="cyan")
+        t.append("  ", style="dim")
+        t.append(f"{agents} agents", style="yellow")
+        return t
+
+    def _header_meta(self) -> Text:
+        term_program = os.environ.get("TERM_PROGRAM", "terminal")
+        profile = (
+            os.environ.get("ITERM_PROFILE")
+            or os.environ.get("TERM_PROFILE")
+            or "terminal profile"
+        )
+        t = Text()
+        t.append(term_program, style=self.accent_bold)
+        t.append("  ", style="dim")
+        t.append(profile, style="dim")
+        return t
+
+    def _session_meta_text(self, session: dict | None) -> Text:
+        if not session:
+            return Text("Pick a session to inspect its branch, commit range, and activity profile.", style="dim")
+
+        status = _session_status(session)
+        started = session.get("started_at", 0) or 0
+        ended = session.get("ended_at", 0) or 0
+        risk_count = session.get("risk_count", 0) or 0
+        branch = str(session.get("branch", "?"))
+        task = session.get("task_desc") or "No task description recorded."
+        pre_commit = _short_commit(session.get("pre_commit"))
+        post_commit = _short_commit(session.get("post_commit"))
+
+        t = Text()
+        t.append("Selected session\n", style=self.accent_bold)
+        t.append(f"{str(session.get('agent', 'unknown')).upper()} ", style=f"bold {AGENT_COLOR.get(str(session.get('agent', '')).lower(), 'white')}")
+        t.append(f"{status}", style="bold green" if status == "active" else "dim")
+        t.append(f"  on {branch}\n", style="cyan")
+        t.append("Started  ", style="dim")
+        t.append(_abs_ts(started), style="white")
+        if ended:
+            t.append("\nEnded    ", style="dim")
+            t.append(_abs_ts(ended), style="white")
+        t.append("\nCommits  ", style="dim")
+        t.append(pre_commit, style="yellow")
+        t.append(" -> ", style="dim")
+        t.append(post_commit if post_commit != "?" else "pending", style="green" if post_commit != "?" else "dim")
+        t.append("\nRisk     ", style="dim")
+        t.append(str(risk_count), style="red" if risk_count else "green")
+        t.append("\nTask     ", style="dim")
+        t.append(str(task), style="white")
+        return t
+
+    def _steps_summary_text(self, session: dict | None, steps: list[dict]) -> Text:
+        if not session:
+            return Text("No session selected.", style="dim")
+
+        counts = Counter(step.get("type", "unknown") for step in steps)
+        tool_calls = sum(step.get("count", 1) for step in steps if step.get("type") == "tool")
+        file_events = sum(_count_file_changes(step) for step in steps)
+        status = _session_status(session)
+
+        t = Text()
+        t.append("Overview  ", style=self.accent_bold)
+        t.append(status, style="green" if status == "active" else "dim")
+        t.append("   ")
+        t.append(f"{counts.get('input', 0)} in", style="green")
+        t.append("   ")
+        t.append(f"{counts.get('reasoning', 0)} think", style="magenta")
+        t.append("   ")
+        t.append(f"{tool_calls} tools", style="yellow")
+        t.append("   ")
+        t.append(f"{counts.get('output', 0)} out", style="cyan")
+        t.append("   ")
+        t.append(f"{file_events} file events", style="blue")
+        return t
+
+    def _step_preview_text(self, step: dict | None) -> Text:
+        if not step:
+            return Text("Move through the timeline to preview the selected step here. Press Enter for the full detail view.", style="dim")
+
+        stype = step.get("type", "unknown")
+        icon, ic = STEP_ICON.get(stype, ("·", "dim"))
+        t = Text()
+        t.append(f"{icon} ", style=ic)
+        t.append(f"{stype.upper()}  ", style=ic)
+        t.append(_preview_text(step), style="white")
+        if stype == "tool":
+            count = step.get("count", 1)
+            category = step.get("category", "exec")
+            files = _count_file_changes(step)
+            t.append("  ", style="dim")
+            t.append(f"[{category}]", style="dim")
+            if count > 1:
+                t.append(f"  x{count}", style="yellow")
+            if files:
+                t.append(f"  {files} file changes", style="blue")
+        return t
+
     def on_mount(self) -> None:
         tt = self.query_one("#steps-table", DataTable)
-        tt.add_columns(" ", "Type", "Detail", "Time")
+        tt.add_columns(" ", "Event", "Summary", "Files", "When")
         self._load_sessions()
+        self._refresh_header()
         self.query_one("#session-list", ListView).focus()
 
-    # ── Session list ──
+    def _refresh_header(self) -> None:
+        self.query_one("#hero-left", Static).update(self._header_title())
+        self.query_one("#hero-right", Static).update(self._header_meta())
 
     def _load_sessions(self) -> None:
         self.sessions = self.store.list_sessions()
@@ -395,43 +570,58 @@ class MachApp(App):
         for s in self.sessions:
             lv.append(self._make_session_item(s))
         self.query_one("#session-pane-title", Static).update(self._sessions_title())
+        self._refresh_header()
+        if self.sessions:
+            self.selected_session_id = self.sessions[0].get("id")
+            self._load_steps(self.sessions[0])
+        else:
+            self.steps = []
+            self.selected_session_id = None
+            self.query_one("#steps-pane-title", Static).update(self._steps_title())
+            self.query_one("#session-meta", Static).update(self._session_meta_text(None))
+            self.query_one("#steps-summary", Static).update(self._steps_summary_text(None, []))
+            self.query_one("#step-preview", Static).update(self._step_preview_text(None))
 
     def _make_session_item(self, s: dict) -> ListItem:
-        sid = str(s.get("id", "")).replace("ses_", "")[:10]
+        sid = _short_id(str(s.get("id", "")), "ses_", size=10)
         agent = str(s.get("agent", "?"))
         branch = str(s.get("branch", "?"))
-        status = s.get("status") or ("active" if not s.get("ended_at") else "ended")
+        status = _session_status(s)
         n_steps = s.get("step_count", 0)
         started = s.get("started_at", 0)
         is_active = status == "active"
         acol = AGENT_COLOR.get(agent.lower(), "white")
+        commit = _short_commit(s.get("post_commit") or s.get("pre_commit"))
+        risk = s.get("risk_count", 0) or 0
 
-        # Line 1: status bullet + short ID
         line1 = Text()
-        line1.append("● " if is_active else "○ ",
-                      style="bold green" if is_active else "dim")
-        line1.append(sid, style="bold")
+        line1.append("● " if is_active else "○ ", style="bold green" if is_active else "dim")
+        line1.append(sid, style="bold white")
+        line1.append("  ", style="dim")
+        line1.append(commit, style="yellow")
 
-        # Line 2: agent + branch
         line2 = Text()
         line2.append(agent, style=f"bold {acol}")
         line2.append("  on ", style="dim")
         line2.append(branch, style="cyan")
 
-        # Line 3: steps + time
         line3 = Text()
         line3.append(f"{n_steps} steps", style="dim")
         line3.append("  ·  ", style="dim")
         line3.append(_rel(started), style="dim")
+        if risk:
+            line3.append("  ·  ", style="dim")
+            line3.append(f"{risk} risk", style="red")
 
-        content = Text.assemble(line1, "\n", line2, "\n", line3)
+        line4 = Text("active now" if is_active else "completed", style="green" if is_active else "dim")
+
+        content = Text.assemble(line1, "\n", line2, "\n", line3, "\n", line4)
         return ListItem(Static(content))
-
-    # ── Steps table ──
 
     def _load_steps(self, session: dict) -> None:
         sid = session.get("id", "")
         self.agent = str(session.get("agent", "unknown"))
+        self.selected_session_id = sid
         try:
             data = self.store.show_session(sid)
             self.steps = _coalesce(data["steps"])
@@ -441,10 +631,12 @@ class MachApp(App):
         tt = self.query_one("#steps-table", DataTable)
         tt.clear()
 
-        short_id = sid.replace("ses_", "")[:12]
+        short_id = _short_id(sid, "ses_")
         self.query_one("#steps-pane-title", Static).update(
-            self._steps_title(sid=short_id, count=len(self.steps))
+            self._steps_title(label="Timeline", sid=short_id, count=len(self.steps))
         )
+        self.query_one("#session-meta", Static).update(self._session_meta_text(data["meta"] if "data" in locals() else session))
+        self.query_one("#steps-summary", Static).update(self._steps_summary_text(data["meta"] if "data" in locals() else session, self.steps))
 
         for step in self.steps:
             stype = step.get("type", "unknown")
@@ -452,7 +644,6 @@ class MachApp(App):
             ts = step.get("ts", 0)
 
             icon_cell = Text(icon, style=ic)
-
             label_cell = Text(stype.upper(), style=ic + " bold" if "bold" not in ic else ic)
 
             if stype == "tool":
@@ -465,21 +656,21 @@ class MachApp(App):
                 tool_content = _strip(step.get("content") or "").strip().replace("\n", " ")
                 if tool_content:
                     detail.append("  ", style="dim")
-                    detail.append(tool_content[:70] + "…" if len(tool_content) > 70
-                                  else tool_content, style="dim")
+                    detail.append(tool_content[:76] + "…" if len(tool_content) > 76 else tool_content, style="dim")
                 if count > 1:
-                    detail.append(f"  ×{count}", style="bold yellow")
+                    detail.append(f"  x{count}", style="bold yellow")
             else:
                 raw = _strip(step.get("content") or "").strip().replace("\n", " ")
                 if not raw:
                     detail = Text("(redacted)", style="dim italic")
                 else:
-                    detail = Text(raw[:110] + "…" if len(raw) > 110 else raw)
+                    detail = Text(raw[:120] + "…" if len(raw) > 120 else raw)
 
+            files_cell = Text(str(_count_file_changes(step)) if _count_file_changes(step) else "·", style="blue" if _count_file_changes(step) else "dim")
             ts_cell = Text(_abs_ts(ts), style="dim") if ts else Text("")
-            tt.add_row(icon_cell, label_cell, detail, ts_cell)
+            tt.add_row(icon_cell, label_cell, detail, files_cell, ts_cell)
 
-    # ── Events ──
+        self.query_one("#step-preview", Static).update(self._step_preview_text(self.steps[0] if self.steps else None))
 
     @on(ListView.Highlighted, "#session-list")
     def on_session_highlighted(self, event: ListView.Highlighted) -> None:
@@ -491,16 +682,19 @@ class MachApp(App):
 
     @on(ListView.Selected, "#session-list")
     def on_session_selected(self, event: ListView.Selected) -> None:
-        # Move focus to steps table
         self.query_one("#steps-table", DataTable).focus()
+
+    @on(DataTable.RowHighlighted, "#steps-table")
+    def on_step_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        row = event.cursor_row
+        if row is not None and 0 <= row < len(self.steps):
+            self.query_one("#step-preview", Static).update(self._step_preview_text(self.steps[row]))
 
     @on(DataTable.RowSelected, "#steps-table")
     def on_step_selected(self, event: DataTable.RowSelected) -> None:
         row = event.cursor_row
         if row is not None and 0 <= row < len(self.steps):
             self.push_screen(StepDetail(self.steps[row], self.agent))
-
-    # ── Actions ──
 
     def action_focus_steps(self) -> None:
         self.query_one("#steps-table", DataTable).focus()

@@ -213,16 +213,19 @@ class SessionStore:
 
     def list_sessions(self) -> list[dict[str, Any]]:
         self.init_repo()
-        with connect(self.paths.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT id, started_at, ended_at, agent, agent_session_id, branch, pre_commit, post_commit,
-                       step_count, risk_count, synced_at
-                FROM sessions
-                ORDER BY started_at DESC
-                """
-            ).fetchall()
-        return [dict(row) for row in rows]
+        try:
+            with connect(self.paths.db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, started_at, ended_at, agent, agent_session_id, branch, pre_commit, post_commit,
+                           step_count, risk_count, synced_at
+                    FROM sessions
+                    ORDER BY started_at DESC
+                    """
+                ).fetchall()
+            return [dict(row) for row in rows]
+        except Exception:
+            return []
 
     def show_session(self, session_id: str | None = None) -> dict[str, Any]:
         self.init_repo()
@@ -363,7 +366,8 @@ class SessionStore:
         self.init_repo()
         with file_lock(self.paths.lock_path):
             verification = []
-            reset_db(self.paths.db_path)
+            if self.get_config().get("db_enabled", True):
+                reset_db(self.paths.db_path)
 
             rebuilt_sessions = 0
             rebuilt_steps = 0
@@ -518,6 +522,8 @@ class SessionStore:
         ]
 
     def _upsert_session_index(self, meta: dict[str, Any], step_count: int, risk_count: int) -> None:
+        if not self.get_config().get("db_enabled", True):
+            return
         with connect(self.paths.db_path) as conn:
             conn.execute(
                 """
@@ -553,6 +559,8 @@ class SessionStore:
             )
 
     def _insert_step(self, payload: dict[str, Any]) -> None:
+        if not self.get_config().get("db_enabled", True):
+            return
         with connect(self.paths.db_path) as conn:
             conn.execute(
                 """
@@ -629,22 +637,28 @@ class SessionStore:
                 )
 
     def _step_count(self, session_id: str) -> int:
-        with connect(self.paths.db_path) as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS count FROM steps WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-        return int(row["count"]) if row else 0
+        try:
+            with connect(self.paths.db_path) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS count FROM steps WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            return int(row["count"]) if row else 0
+        except Exception:
+            return 0
 
     def _risk_count(self, session_id: str) -> int:
-        with connect(self.paths.db_path) as conn:
-            row = conn.execute(
-                """
-                SELECT COUNT(*) AS count
-                FROM risk_flags rf
-                JOIN steps s ON s.id = rf.step_id
-                WHERE s.session_id = ?
-                """,
-                (session_id,),
-            ).fetchone()
-        return int(row["count"]) if row else 0
+        try:
+            with connect(self.paths.db_path) as conn:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM risk_flags rf
+                    JOIN steps s ON s.id = rf.step_id
+                    WHERE s.session_id = ?
+                    """,
+                    (session_id,),
+                ).fetchone()
+            return int(row["count"]) if row else 0
+        except Exception:
+            return 0

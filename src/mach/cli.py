@@ -77,6 +77,8 @@ def config_set_command(args: argparse.Namespace) -> None:
         updates["hook_agents"] = [agent for agent in args.hook_agents.split(",") if agent]
     if args.use_tui is not None:
         updates["use_tui"] = args.use_tui == "true"
+    if args.db_enabled is not None:
+        updates["db_enabled"] = args.db_enabled == "true"
     emit(store.update_config(updates))
 
 
@@ -101,6 +103,8 @@ def configure_command(args: argparse.Namespace) -> None:
         updates["store_content"] = [t.strip() for t in args.store_content.split(",") if t.strip()]
     if args.use_tui is not None:
         updates["use_tui"] = args.use_tui == "true"
+    if args.db_enabled is not None:
+        updates["db_enabled"] = args.db_enabled == "true"
 
     hook_agents = list(current.get("hook_agents") or [])
     if args.hook_agents is not None:
@@ -362,6 +366,7 @@ def main() -> None:
     configure_parser.add_argument("--add-agent", action="append")
     configure_parser.add_argument("--remove-agent", action="append")
     configure_parser.add_argument("--store-content", help="Comma-separated step types to store content for (e.g. input,reasoning,tool,output)")
+    configure_parser.add_argument("--db-enabled", choices=["true", "false"])
     configure_parser.add_argument("--apply", action="store_true", help="Apply current config to hooks and tracker after updating.")
     configure_parser.add_argument("--refresh-hooks", action="store_true", help="Reinstall managed hooks after updating config.")
     configure_parser.set_defaults(handler=configure_command)
@@ -482,6 +487,7 @@ def main() -> None:
     config_set_parser.add_argument("--poll-interval-sec")
     config_set_parser.add_argument("--hook-agents")
     config_set_parser.add_argument("--use-tui", choices=["true", "false"])
+    config_set_parser.add_argument("--db-enabled", choices=["true", "false"])
     config_set_parser.set_defaults(handler=config_set_command)
 
     track_parser = subparsers.add_parser("track", help="Manage automatic repository tracking.")

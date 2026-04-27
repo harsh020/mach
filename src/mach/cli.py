@@ -75,6 +75,8 @@ def config_set_command(args: argparse.Namespace) -> None:
         updates["poll_interval_sec"] = float(args.poll_interval_sec)
     if args.hook_agents is not None:
         updates["hook_agents"] = [agent for agent in args.hook_agents.split(",") if agent]
+    if args.use_tui is not None:
+        updates["use_tui"] = args.use_tui == "true"
     emit(store.update_config(updates))
 
 
@@ -97,6 +99,8 @@ def configure_command(args: argparse.Namespace) -> None:
         updates["poll_interval_sec"] = float(args.poll_interval_sec)
     if args.store_content is not None:
         updates["store_content"] = [t.strip() for t in args.store_content.split(",") if t.strip()]
+    if args.use_tui is not None:
+        updates["use_tui"] = args.use_tui == "true"
 
     hook_agents = list(current.get("hook_agents") or [])
     if args.hook_agents is not None:
@@ -477,6 +481,7 @@ def main() -> None:
     config_set_parser.add_argument("--idle-timeout-sec")
     config_set_parser.add_argument("--poll-interval-sec")
     config_set_parser.add_argument("--hook-agents")
+    config_set_parser.add_argument("--use-tui", choices=["true", "false"])
     config_set_parser.set_defaults(handler=config_set_command)
 
     track_parser = subparsers.add_parser("track", help="Manage automatic repository tracking.")

@@ -31,6 +31,7 @@ def resolve_paths(repo_root: Path | None = None) -> MachPaths:
         sessions_dir=mach_dir / "sessions",
         db_path=mach_dir / "index.db",
         pack_dir=mach_dir / "pack",
+        blobs_dir=mach_dir / "blobs",
         lock_path=mach_dir / ".lock",
         agent_sessions_path=mach_dir / "agent_sessions.json",
         inbox_dir=mach_dir / "inbox",

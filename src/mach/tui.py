@@ -17,7 +17,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, ListItem, ListView, Static
+from textual.widgets import DataTable, Footer, ListItem, ListView, Static, Input
 from rich.text import Text
 
 from mach.session import SessionStore
@@ -385,12 +385,23 @@ class MachApp(App):
     Footer > .footer--key {
         background: $primary;
     }
+    #step-search-input {
+        border: none;
+        background: $boost;
+        height: 2;
+        margin: 0;
+        padding: 0 1;
+    }
+    #step-search-input:focus {
+        border: none;
+    }
     """
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("tab,right", "focus_steps", "→ Steps", show=True),
         Binding("escape,left", "focus_sessions", "← Sessions", show=True),
+        Binding("slash", "focus_search", "/ Search", show=True),
         Binding("r", "refresh", "Refresh", show=True),
     ]
 
@@ -417,6 +428,7 @@ class MachApp(App):
 
             with Vertical(id="steps-pane"):
                 yield Static(id="steps-pane-title", classes="pane-title")
+                yield Input(placeholder="Search steps... (press '/')", id="step-search-input")
                 yield Static(id="steps-summary", classes="subpanel")
                 yield DataTable(id="steps-table", cursor_type="row",
                                 zebra_stripes=True, show_cursor=True)
@@ -638,7 +650,34 @@ class MachApp(App):
         self.query_one("#session-meta", Static).update(self._session_meta_text(data["meta"] if "data" in locals() else session))
         self.query_one("#steps-summary", Static).update(self._steps_summary_text(data["meta"] if "data" in locals() else session, self.steps))
 
+        # Clear search input on new session
+        search_input = self.query_one("#step-search-input", Input)
+        search_input.value = ""
+        self._populate_table()
+
+    def _populate_table(self, query: str = "") -> None:
+        tt = self.query_one("#steps-table", DataTable)
+        tt.clear()
+        
+        q = query.lower().strip()
+        visible_steps = []
+
         for step in self.steps:
+            stype = step.get("type", "unknown")
+            content = str(step.get("content") or "").lower()
+            tool_content = str(step.get("tool", {}).get("content") or "").lower()
+            name = str(step.get("tool", {}).get("name") or "").lower()
+
+            if q and q not in content and q not in tool_content and q not in name and q not in stype:
+                continue
+            
+            visible_steps.append(step)
+
+        self.query_one("#steps-pane-title", Static).update(
+            self._steps_title(label="Timeline", sid=_short_id(self.selected_session_id or "", "ses_"), count=len(visible_steps))
+        )
+
+        for step in visible_steps:
             stype = step.get("type", "unknown")
             icon, ic = STEP_ICON.get(stype, ("·", "dim"))
             ts = step.get("ts", 0)
@@ -670,7 +709,11 @@ class MachApp(App):
             ts_cell = Text(_abs_ts(ts), style="dim") if ts else Text("")
             tt.add_row(icon_cell, label_cell, detail, files_cell, ts_cell)
 
-        self.query_one("#step-preview", Static).update(self._step_preview_text(self.steps[0] if self.steps else None))
+        self.query_one("#step-preview", Static).update(self._step_preview_text(visible_steps[0] if visible_steps else None))
+
+    @on(Input.Changed, "#step-search-input")
+    def on_search_changed(self, event: Input.Changed) -> None:
+        self._populate_table(event.value)
 
     @on(ListView.Highlighted, "#session-list")
     def on_session_highlighted(self, event: ListView.Highlighted) -> None:
@@ -698,6 +741,9 @@ class MachApp(App):
 
     def action_focus_steps(self) -> None:
         self.query_one("#steps-table", DataTable).focus()
+
+    def action_focus_search(self) -> None:
+        self.query_one("#step-search-input", Input).focus()
 
     def action_focus_sessions(self) -> None:
         self.query_one("#session-list", ListView).focus()

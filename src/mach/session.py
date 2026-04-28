@@ -39,6 +39,7 @@ class SessionStore:
         self.paths.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.paths.pack_dir.mkdir(parents=True, exist_ok=True)
         self.paths.inbox_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.blobs_dir.mkdir(parents=True, exist_ok=True)
         ensure_json_file(self.paths.config_path, DEFAULT_CONFIG)
         ensure_json_file(self.paths.agent_sessions_path, {})
         ensure_json_file(self.paths.ingest_state_path, {"files": {}})
@@ -234,10 +235,23 @@ class SessionStore:
             raise MachError("No session specified and no active session exists.")
         meta = self.read_session_meta(target_id)
         session_dir = self.paths.sessions_dir / target_id
+        steps = read_jsonl(session_dir / "steps.jsonl")
+        
+        # Hydrate steps with blob content
+        for step in steps:
+            if step.get("content") is None and step.get("content_hash"):
+                blob_content = self._read_blob(step["content_hash"])
+                if blob_content is not None:
+                    step["content"] = blob_content
+            if step.get("tool") and step["tool"].get("content") is None and step["tool"].get("content_hash"):
+                blob_content = self._read_blob(step["tool"]["content_hash"])
+                if blob_content is not None:
+                    step["tool"]["content"] = blob_content
+
         return {
             "meta": meta,
             "merkle": read_json(session_dir / "merkle.sig"),
-            "steps": read_jsonl(session_dir / "steps.jsonl"),
+            "steps": steps,
         }
 
     def resume_branch(self, branch: str | None = None) -> dict[str, Any]:
@@ -448,6 +462,22 @@ class SessionStore:
         self._write_agent_sessions(mappings)
         return meta["id"]
 
+    def _write_blob(self, content_hash: str, content: str) -> None:
+        if not content or not content_hash:
+            return
+        blob_path = self.paths.blobs_dir / content_hash[:2] / content_hash
+        if not blob_path.exists():
+            blob_path.parent.mkdir(parents=True, exist_ok=True)
+            blob_path.write_text(content, encoding="utf-8")
+
+    def _read_blob(self, content_hash: str) -> str | None:
+        if not content_hash:
+            return None
+        blob_path = self.paths.blobs_dir / content_hash[:2] / content_hash
+        if blob_path.exists():
+            return blob_path.read_text(encoding="utf-8")
+        return None
+
     def _drop_agent_session_mapping_for_session(self, session_id: str) -> None:
         mappings = self._read_agent_sessions()
         updated = {
@@ -481,7 +511,14 @@ class SessionStore:
         payload["content_hash"] = hash_payload({"content": payload["content"]})
         
         step_type = payload["type"]
+        raw_content = payload["content"]
+        
         if step_type != "system_action" and step_type not in store_content:
+            payload["content"] = None
+        elif step_type != "system_action":
+            # Save the raw content to the blob store and clear from the payload
+            if raw_content:
+                self._write_blob(payload["content_hash"], raw_content)
             payload["content"] = None
 
         payload.setdefault("caused_by", [prev_step_id] if prev_step_id else [])
@@ -490,8 +527,13 @@ class SessionStore:
         tool_payload = payload.get("tool")
         if tool_payload:
             tool_payload = dict(tool_payload)
-            tool_payload["content_hash"] = hash_payload({"content": tool_payload.get("content", "")})
+            raw_tool_content = tool_payload.get("content", "")
+            tool_payload["content_hash"] = hash_payload({"content": raw_tool_content})
             if "tool" not in store_content:
+                tool_payload["content"] = None
+            else:
+                if raw_tool_content:
+                    self._write_blob(tool_payload["content_hash"], raw_tool_content)
                 tool_payload["content"] = None
             payload["tool"] = tool_payload
 

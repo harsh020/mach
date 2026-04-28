@@ -13,6 +13,7 @@ class MachPaths:
     sessions_dir: Path
     db_path: Path
     pack_dir: Path
+    blobs_dir: Path
     lock_path: Path
     agent_sessions_path: Path
     inbox_dir: Path

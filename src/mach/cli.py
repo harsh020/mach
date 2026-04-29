@@ -4,6 +4,8 @@ import argparse
 import json
 import sys
 import pydoc
+import termios
+import tty
 from pathlib import Path
 
 from mach.hooks import HookManager
@@ -26,12 +28,105 @@ def emit(payload: object) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def init_command(_: argparse.Namespace) -> None:
+def _select_from_terminal(
+    prompt: str,
+    choices: list[dict[str, str]],
+    selected_values: list[str],
+) -> list[str]:
+    if not choices:
+        return []
+
+    selected = set(selected_values)
+    cursor = 0
+    line_count = len(choices) + 3
+    rendered = False
+
+    def render() -> None:
+        nonlocal rendered
+        if rendered:
+            sys.stderr.write(f"\x1b[{line_count}F")
+        sys.stderr.write(f"\x1b[2K\r{prompt}\n")
+        sys.stderr.write("\x1b[2K\rUse Up/Down to move, Space to select, Enter when done.\n")
+        sys.stderr.write("\x1b[2K\r\n")
+        for index, choice in enumerate(choices):
+            pointer = ">" if index == cursor else " "
+            mark = "[x]" if choice["value"] in selected else "[ ]"
+            sys.stderr.write(f"\x1b[2K\r{pointer} {mark} {choice['label']}\n")
+        sys.stderr.flush()
+        rendered = True
+
+    def read_key() -> str:
+        char = sys.stdin.read(1)
+        if char == "\x03":
+            raise KeyboardInterrupt
+        if char == "\x1b":
+            suffix = sys.stdin.read(2)
+            if suffix == "[A":
+                return "up"
+            if suffix == "[B":
+                return "down"
+            return "escape"
+        if char in {"\r", "\n"}:
+            return "enter"
+        if char == " ":
+            return "space"
+        return char
+
+    old_settings = termios.tcgetattr(sys.stdin)
+    sys.stderr.write("\x1b[?25l")
+    try:
+        tty.setraw(sys.stdin.fileno())
+        render()
+        while True:
+            key = read_key()
+            if key == "up":
+                cursor = (cursor - 1) % len(choices)
+            elif key == "down":
+                cursor = (cursor + 1) % len(choices)
+            elif key == "space":
+                value = choices[cursor]["value"]
+                if value in selected:
+                    selected.remove(value)
+                else:
+                    selected.add(value)
+            elif key == "enter":
+                break
+            render()
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        sys.stderr.write("\x1b[?25h")
+        sys.stderr.flush()
+
+    sys.stderr.write("\n")
+    sys.stderr.flush()
+    return [choice["value"] for choice in choices if choice["value"] in selected]
+
+
+def _choose_hook_agents(manager: HookManager, requested_agents: str | None = None) -> list[str]:
+    if requested_agents is not None:
+        return [agent for agent in requested_agents.split(",") if agent]
+
+    default_agents = manager.available_agents()
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        return default_agents
+
+    choices = [
+        {
+            "value": name,
+            "label": f"{name} ({manager.adapters[name].support})",
+        }
+        for name in manager.available_agents()
+    ]
+    return _select_from_terminal("Select agent hooks to install:", choices, default_agents)
+
+
+def init_command(args: argparse.Namespace) -> None:
     store = SessionStore()
     mach_dir = store.init_repo()
-    config = store.update_config({"enabled": True})
     manager = HookManager()
-    hook_results = manager.install(config.get("hook_agents") or manager.installable_agents())
+    hook_agents = _choose_hook_agents(manager, args.hook_agents)
+    config = store.update_config({"enabled": True, "hook_agents": hook_agents})
+    hook_results = manager.install(hook_agents) if hook_agents else {"installed": []}
     tracker = TrackerService()
     tracker.ensure_state()
     tracking = tracker.start_daemon() if config.get("auto_tracking", True) else tracker.status()
@@ -347,6 +442,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_parser = subparsers.add_parser("init", help="Initialize .mach metadata.")
+    init_parser.add_argument("--hook-agents", help="Comma-separated agents to install without prompting.")
     init_parser.set_defaults(handler=init_command)
 
     enable_parser = subparsers.add_parser("enable", help="Enable Mach hooks and background tracking in this repo.")

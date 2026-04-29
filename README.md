@@ -41,8 +41,11 @@ pip install -e .
 Initialize Mach in your current repository and explore its capabilities:
 
 ```bash
-# Bootstrap .mach, persist default config, install agent hooks, and start the tracker
+# Bootstrap .mach, choose agent hooks, and start the tracker
 mach init
+
+# Scripted setup without the interactive selector
+mach init --hook-agents claude,codex,gemini
 
 # Check the status of installed hooks
 mach hooks status
@@ -75,7 +78,7 @@ Mach supports integrating with various popular AI agents to automatically captur
 ## 💻 Command Reference
 
 ### Setup & Configuration
-- `mach init`: Bootstrap `.mach`, set defaults, install agent hooks, and start tracking.
+- `mach init`: Bootstrap `.mach`, choose agent hooks with an interactive selector, and start tracking.
 - `mach enable`: Turn the integration back on using stored configuration.
 - `mach disable`: Uninstall configured hooks and stop the tracker.
 - `mach config show|set`: View or edit low-level configurations.

@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🚀 Mach
+# Mach
 
 **Local-first, Git-adjacent execution ledger for AI agents.**
 

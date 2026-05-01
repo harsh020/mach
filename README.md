@@ -2,106 +2,112 @@
 
 # 🚀 Mach
 
-**Local-first, Git-adjacent execution logging system for AI agents.**
+**Local-first, Git-adjacent execution ledger for AI agents.**
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 </div>
 
-## 📖 Overview
+## 📖 What is Mach?
 
-Mach is a comprehensive, local-first execution tracking system designed specifically for AI agents. It seamlessly captures inputs, reasoning, tool usage, and outputs across various AI assistants. By integrating closely with your Git workflow, Mach provides a verifiable, searchable, and structured history of AI interactions directly within your repositories.
+Mach is a high-performance execution tracking system for AI agents. It seamlessly intercepts and logs AI reasoning, inputs, tool calls, and outputs. By sitting right beside your Git repository, Mach provides a cryptographically verifiable, searchable, and structured history of *everything* your AI assistants do.
 
-## ✨ Key Features
+## ✨ Core Architecture
 
-- **Comprehensive Activity Tracking:** Logs AI activity across the entire lifecycle: `input`, `reasoning`, `tool`, and `output`.
-- **Git-Adjacent Workflow:** Works alongside your Git repository, logging workspace changes (creates, writes, deletes, branch changes) as secondary evidence.
-- **Agent-Scoped Sessions:** Organizes execution logs logically by agent and external session IDs.
-- **Seamless Integrations:** Automatic hook installation for supported AI agents (Claude, Copilot, Gemini, Codex).
-- **Robust Storage Architecture:** Uses JSONL as the uncorruptible source of truth, backed by a derived SQLite index (`.mach/index.db`) for fast querying.
-- **Continuous Ingestion:** Includes a background tracker that continuously processes queued AI events.
-- **Python SDK:** Easily instrument your own scripts via `mach.record_step(step_dict)`.
+Mach is built for uncompromising speed, durability, and a native developer experience:
+
+- **Git-Style Blob Storage:** Massive AI outputs and prompts are hashed and deduplicated into a native blob store (`.mach/blobs/`). This keeps your core JSONL logs ultra-lightweight and blazingly fast to parse.
+- **Lightning TUI & Search:** Drop into a premium, interactive terminal dashboard (`mach log`). Press `/` at any time to execute real-time, instantaneous searches across thousands of AI events and code chunks.
+- **Hybrid Indexing (Toggleable):** Mach uses a fast SQLite FTS5 index (`.mach/index.db`) for sub-millisecond queries. Running on a constrained system? Toggle it off via `--db-enabled false` and Mach will gracefully degrade to pure file-system blob traversal, just like Git.
+- **Zero-Latency Ingestion:** AI events are fired into an asynchronous inbox. A lightweight background daemon processes them into the ledger, ensuring 0ms latency impact on your actual AI workflows.
+- **Seamless Hooks:** Automatically installs intercepts for Claude, Copilot, Gemini, Codex, and Cursor.
 
 ## 🚀 Installation
 
-Mach requires Python 3.9 or higher. To install, clone the repository and install it in a virtual environment:
+Mach requires Python 3.9+ and is designed to be installed globally via our standalone installer script. It automatically isolates itself so it never conflicts with your system Python.
 
 ```bash
-# Create and activate a virtual environment
-python -m venv .venv
-source .venv/bin/activate
+# Install Mach globally
+curl -fsSL https://raw.githubusercontent.com/harsh020/mach/main/install.sh | bash
+```
 
-# Install Mach
-pip install -e .
+To completely uninstall Mach (safely preserving your existing repository logs):
+```bash
+curl -fsSL https://raw.githubusercontent.com/harsh020/mach/main/uninstall.sh | bash
 ```
 
 ## 🏁 Quick Start
 
-Initialize Mach in your current repository and explore its capabilities:
+Navigate to any codebase and initialize Mach:
 
 ```bash
-# Bootstrap .mach, choose agent hooks, and start the tracker
+# Bootstrap .mach and launch the interactive agent selector
 mach init
 
-# Scripted setup without the interactive selector
+# Or bypass the interactive prompt for CI/CD
 mach init --hook-agents claude,codex,gemini
-
-# Check the status of installed hooks
-mach hooks status
-
-# View current configuration
-mach config show
-
-# Configure specific agents and apply tracking changes
-mach configure --add-agent gemini --remove-agent cursor --refresh-hooks --apply
-
-# Manually ingest an event
-mach ingest event --agent codex --source-session-id turn-42 --type input --content "fix auth bug"
-mach ingest process
-
-# Check tracker status and view the log
-mach track status
-mach log
 ```
 
-## 🔌 Hook Support
+### The TUI Dashboard
+Once Mach is tracking your agents, launch the interactive dashboard:
+```bash
+mach log
+```
+* **Navigate:** Use `Arrow Keys` or `Tab` to move between your active AI sessions and the event timeline.
+* **Inspect:** Press `Enter` on any step to open a detailed modal showing exact file diffs and raw content.
+* **Search:** Press `/` to instantly filter the timeline by tool name, AI reasoning, or file modifications.
 
-Mach supports integrating with various popular AI agents to automatically capture execution context:
+## ⚙️ Configuration
 
-- **Claude:** Project-local hooks installed into `.claude/settings.local.json`
-- **Copilot:** Repository hooks installed into `.github/hooks/mach.json`
-- **Gemini:** Project-local hooks installed into `.gemini/settings.json`
-- **Codex:** Global hooks installed into `~/.codex/hooks.json` and `~/.codex/config.toml`
-- **Cursor:** Exposes background-agent status webhooks and MCP (*reports as `status-webhook-only`*)
+You can fully customize how Mach behaves by viewing and editing its configuration. Configurations are stored locally in `.mach/config`.
+
+**To view all current configurations:**
+```bash
+mach config show
+```
+
+**To change a configuration:**
+You can use `mach config set <key> <value>` for low-level overrides, or use the safer `mach configure` command for high-level setup.
+```bash
+# Example: Disable the SQLite database indexing
+mach config set db_enabled false
+
+# Example: Disable the TUI and revert to classic terminal logs
+mach config set use_tui false
+```
+
+### Configurable Keys:
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Master switch to enable/disable Mach tracking. |
+| `auto_session` | `true` | Automatically groups orphan events into active sessions. |
+| `auto_tracking` | `true` | Automatically launches the background daemon when needed. |
+| `use_tui` | `true` | Uses the interactive Textual TUI for `mach log`. Set to `false` for raw text logs. |
+| `db_enabled` | `true` | Enables the SQLite FTS5 database for instant searching. |
+| `hook_agents` | `[...]` | List of AI agents to automatically install intercepts for. |
+| `ignore_paths` | `[...]` | Directories to ignore when calculating file diffs (e.g., `node_modules`). |
+| `poll_interval_sec`| `2` | How often the background daemon checks the inbox. |
 
 ## 💻 Command Reference
 
 ### Setup & Configuration
-- `mach init`: Bootstrap `.mach`, choose agent hooks with an interactive selector, and start tracking.
-- `mach enable`: Turn the integration back on using stored configuration.
-- `mach disable`: Uninstall configured hooks and stop the tracker.
-- `mach config show|set`: View or edit low-level configurations.
-- `mach configure`: High-level operational command to update config and reconcile hooks/tracking.
+- `mach init`: Bootstrap the repository, interactively select hooks, and start the daemon.
+- `mach configure`: Re-evaluate your hook settings (e.g. `mach configure --db-enabled false`).
+- `mach config show|set`: View or manually override low-level config tokens.
+- `mach enable` / `mach disable`: Globally toggle tracking without losing configuration.
 
-### Session Management
-- `mach session start`: Start a new execution session.
-- `mach session end`: End the current execution session.
+### Session & Event Management
+- `mach log`: Open the interactive TUI.
+- `mach show <session_id>`: Dump raw JSON output of a specific execution timeline.
+- `mach verify`: Cryptographically verify the integrity of the JSONL ledger and Blob hashes.
+- `mach fsck`: Rebuild the SQLite search index from scratch using the raw Blob store.
 
-### Logging & Verification
-- `mach log`: View execution logs in an interactive TUI or classic paginated view.
-- `mach show`: Display details of specific execution steps.
-- `mach verify`: Verify the cryptographic integrity of the logs.
-- `mach fsck`: Rebuild the SQLite index from the JSONL session logs.
+### Daemon Controls
+- `mach track start|stop|status`: Manage the background ingestion process.
+- `mach hooks status`: Check the health and presence of your AI agent intercepts.
 
-### Tracking & Ingestion
-- `mach track start|stop|status|scan`: Manage the background tracker process.
-- `mach ingest event|end|process`: Interface directly with the inbox queue to record raw events.
-- `mach hooks install|uninstall|status`: Manage integration hooks for supported agents.
-
-## 🏗️ Architecture Notes
-
-- **Source of Truth:** All events are durably appended to JSONL files under `.mach/sessions/`.
-- **Indexing:** The SQLite database at `.mach/index.db` is purely a derived index and can be rebuilt at any time via `mach fsck`.
-- **Asynchronous Ingestion:** AI-native events are written to `.mach/inbox/*.jsonl`. The background tracker continuously processes these into the structured session log.
-- **Git Independence:** Git integration works best-effort, even before a repository is fully initialized.
+---
+<div align="center">
+<i>Built to make AI execution as verifiable as your code.</i>
+</div>

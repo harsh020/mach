@@ -13,6 +13,9 @@
 
 Mach is a high-performance execution tracking system for AI agents. It seamlessly intercepts and logs AI reasoning, inputs, tool calls, and outputs. By sitting right beside your Git repository, Mach provides a cryptographically verifiable, searchable, and structured history of *everything* your AI assistants do.
 
+> [!NOTE]
+> **CLI Agents Only:** Currently, Mach only supports intercepting terminal-based AI agents (like Claude Code, Aider, or Copilot CLI). GUI-based IDE agents (like the native Cursor or VSCode extensions) are not yet fully supported for automatic hook tracking.
+
 ## ✨ Core Architecture
 
 Mach is built for uncompromising speed, durability, and a native developer experience:
@@ -21,7 +24,7 @@ Mach is built for uncompromising speed, durability, and a native developer exper
 - **Lightning TUI & Search:** Drop into a premium, interactive terminal dashboard (`mach log`). Press `/` at any time to execute real-time, instantaneous searches across thousands of AI events and code chunks.
 - **Hybrid Indexing (Toggleable):** Mach uses a fast SQLite FTS5 index (`.mach/index.db`) for sub-millisecond queries. Running on a constrained system? Toggle it off via `--db-enabled false` and Mach will gracefully degrade to pure file-system blob traversal, just like Git.
 - **Zero-Latency Ingestion:** AI events are fired into an asynchronous inbox. A lightweight background daemon processes them into the ledger, ensuring 0ms latency impact on your actual AI workflows.
-- **Seamless Hooks:** Automatically installs intercepts for Claude, Copilot, Gemini, Codex, and Cursor.
+- **Seamless Hooks:** Automatically installs intercepts for terminal-based CLI agents (Claude Code, Copilot CLI, Gemini, Codex, etc).
 
 ## 🚀 Installation
 

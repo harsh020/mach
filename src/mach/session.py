@@ -7,7 +7,7 @@ from typing import Any
 
 from mach.config import DEFAULT_CONFIG, merge_config
 from mach.db import connect, init_db, reset_db
-from mach.git_utils import current_branch, head_commit
+from mach.git_utils import current_branch, head_commit, remote_origin_url, repository_name
 from mach.locking import file_lock
 from mach.merkle import chain_hash, hash_payload
 from mach.repository import resolve_paths
@@ -89,6 +89,13 @@ class SessionStore:
             "ended_at": None,
             "agent": agent,
             "branch": current_branch(self.paths.repo_root),
+            "remote": {
+                "url": remote_origin_url(self.paths.repo_root),
+                "repository_name": repository_name(self.paths.repo_root),
+                "last_pushed_step_id": None,
+                "pushed_root": None,
+                "last_pushed_ts": 0
+            },
             "pre_commit": pre_commit,
             "post_commit": None,
             "task_desc": task_desc,
@@ -501,41 +508,59 @@ class SessionStore:
         config = self.read_config()
         store_content = config.get("store_content", ["input"])
 
-        payload = dict(step_dict)
-        payload.setdefault("id", f"step_{uuid.uuid4().hex}")
-        payload["session_id"] = session_id
-        payload["step_num"] = step_num
-        payload.setdefault("ts", int(time()))
-        payload.setdefault("type", "output")
-        payload.setdefault("content", "")
-        payload["content_hash"] = hash_payload({"content": payload["content"]})
-        
-        step_type = payload["type"]
-        raw_content = payload["content"]
-        
+        step_id = step_dict.get("id", f"step_{uuid.uuid4().hex}")
+        ts = step_dict.get("ts", int(time()))
+        step_type = step_dict.get("type", "output")
+        raw_content = step_dict.get("content", "")
+        content_hash = hash_payload({"content": raw_content})
+
+        final_content = None
         if step_type != "system_action" and step_type not in store_content:
-            payload["content"] = None
+            pass # discard content
         elif step_type != "system_action":
-            # Save the raw content to the blob store and clear from the payload
             if raw_content:
-                self._write_blob(payload["content_hash"], raw_content)
-            payload["content"] = None
+                self._write_blob(content_hash, raw_content)
+        else:
+            final_content = raw_content
 
-        payload.setdefault("caused_by", [prev_step_id] if prev_step_id else [])
-        payload.setdefault("risk_level", "none")
+        tool_obj = None
+        if "tool" in step_dict:
+            t = dict(step_dict["tool"])
+            raw_t_content = t.get("content", "")
+            t_content_hash = hash_payload({"content": raw_t_content})
+            
+            if "tool" in store_content and raw_t_content:
+                self._write_blob(t_content_hash, raw_t_content)
+                
+            from mach.models import ToolCall
+            tool_obj = ToolCall(
+                name=t.get("name", ""),
+                category=t.get("category", "exec"),
+                content_hash=t_content_hash,
+                content=None
+            )
 
-        tool_payload = payload.get("tool")
-        if tool_payload:
-            tool_payload = dict(tool_payload)
-            raw_tool_content = tool_payload.get("content", "")
-            tool_payload["content_hash"] = hash_payload({"content": raw_tool_content})
-            if "tool" not in store_content:
-                tool_payload["content"] = None
-            else:
-                if raw_tool_content:
-                    self._write_blob(tool_payload["content_hash"], raw_tool_content)
-                tool_payload["content"] = None
-            payload["tool"] = tool_payload
+        from mach.models import Step, FileChange
+        
+        fc_data = step_dict.get("file_changes", [])
+        file_changes = [FileChange.from_dict(fc) for fc in fc_data] if fc_data else []
+
+        step_obj = Step(
+            id=step_id,
+            session_id=session_id,
+            step_num=step_num,
+            ts=ts,
+            type=step_type,
+            content_hash=content_hash,
+            content=final_content,
+            caused_by=step_dict.get("caused_by", [prev_step_id] if prev_step_id else []),
+            risk_level=step_dict.get("risk_level", "none"),
+            tool=tool_obj,
+            file_changes=file_changes,
+            commit_hash=head_commit(self.paths.repo_root)
+        )
+
+        payload = step_obj.to_dict()
 
         append_jsonl(steps_path, payload)
 

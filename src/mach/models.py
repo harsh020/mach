@@ -74,6 +74,7 @@ class Step:
     risk_level: RiskLevel = "none"
     tool: Optional[ToolCall] = None
     file_changes: list[FileChange] = field(default_factory=list)
+    commit_hash: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict, dropping nulls to keep JSONL clean."""
@@ -103,7 +104,29 @@ class Step:
             caused_by=data.get("caused_by", []),
             risk_level=data.get("risk_level", "none"),
             tool=tool,
-            file_changes=file_changes
+            file_changes=file_changes,
+            commit_hash=data.get("commit_hash")
+        )
+
+@dataclass
+class RemoteInfo:
+    url: Optional[str] = None
+    repository_name: Optional[str] = None
+    last_pushed_step_id: Optional[str] = None
+    pushed_root: Optional[str] = None
+    last_pushed_ts: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RemoteInfo":
+        return cls(
+            url=data.get("url"),
+            repository_name=data.get("repository_name"),
+            last_pushed_step_id=data.get("last_pushed_step_id"),
+            pushed_root=data.get("pushed_root"),
+            last_pushed_ts=data.get("last_pushed_ts", 0)
         )
 
 @dataclass
@@ -120,9 +143,13 @@ class SessionMeta:
     post_commit: Optional[str] = None
     step_count: int = 0
     risk_count: int = 0
+    remote: Optional[RemoteInfo] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if self.remote is None:
+            d.pop("remote", None)
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SessionMeta":
@@ -138,5 +165,6 @@ class SessionMeta:
             pre_commit=data.get("pre_commit"),
             post_commit=data.get("post_commit"),
             step_count=data.get("step_count", 0),
-            risk_count=data.get("risk_count", 0)
+            risk_count=data.get("risk_count", 0),
+            remote=RemoteInfo.from_dict(data["remote"]) if "remote" in data else None
         )

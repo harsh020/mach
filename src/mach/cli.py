@@ -6,7 +6,12 @@ import sys
 import pydoc
 import termios
 import tty
+import getpass
+import urllib.request
+import urllib.error
 from pathlib import Path
+
+from mach.auth import save_token, logout, get_token
 
 from mach.hooks import HookManager
 from mach.ingest import EventInboxService
@@ -149,6 +154,119 @@ def disable_command(_: argparse.Namespace) -> None:
     hook_results = HookManager().uninstall(config.get("hook_agents"))
     tracking = TrackerService().stop_daemon()
     emit({"enabled": False, "config": config, "hooks": hook_results, "tracking": tracking})
+
+
+def login_command(args: argparse.Namespace) -> None:
+    token = args.token
+    if not token:
+        token = getpass.getpass("Enter your Mach Personal Access Token: ").strip()
+    
+    if not token:
+        print("Error: Token cannot be empty.", file=sys.stderr)
+        sys.exit(1)
+
+    save_token(token)
+    print("Success: Logged in. Token saved globally to ~/.mach/credentials.json")
+
+
+def logout_command(_: argparse.Namespace) -> None:
+    logout()
+    print("Success: Logged out.")
+
+
+def push_command(args: argparse.Namespace) -> None:
+    token = get_token()
+    if not token:
+        print("Error: You must log in first. Run: mach login", file=sys.stderr)
+        sys.exit(1)
+        
+    session_id = args.session_id
+    print(f"Pushing session {session_id} to Mach Web...")
+    
+    store = SessionStore()
+    try:
+        meta = store.read_session_meta(session_id)
+        remote = meta.get("remote", {})
+        repo_name = remote.get("repository_name", "unknown")
+        print(f"  Repository: {repo_name}")
+        print("  Calculating Merkle deltas...")
+        
+        # Determine what needs to be pushed
+        last_pushed_id = remote.get("last_pushed_step_id")
+        steps_file = store.paths.sessions_dir / session_id / "steps.jsonl"
+        
+        steps_to_push = []
+        if steps_file.exists():
+            with open(steps_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+                
+            found_last = False
+            for line in lines:
+                if not line.strip(): continue
+                step_data = json.loads(line)
+                if not last_pushed_id or found_last:
+                    steps_to_push.append(step_data)
+                elif step_data.get("id") == last_pushed_id:
+                    found_last = True
+        
+        if not steps_to_push:
+            print(f"Success: Session {session_id} is already up-to-date.")
+            return
+            
+        total_steps = len(steps_to_push)
+        print(f"  Found {total_steps} unpushed steps. Uploading...")
+        
+        config = store.read_config()
+        base_url = config.get("api_base_url", "http://localhost:8000").rstrip("/")
+        endpoint = f"{base_url}/api/v1/sessions/sync/"
+        
+        BATCH_SIZE = 50
+        pushed_count = 0
+        
+        for i in range(0, total_steps, BATCH_SIZE):
+            batch = steps_to_push[i:i + BATCH_SIZE]
+            
+            payload = {
+                "session": meta,
+                "steps": batch,
+                "blobs": {} # To be implemented when backend supports blob fetching
+            }
+            
+            req = urllib.request.Request(
+                endpoint,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}"
+                },
+                method="POST"
+            )
+            
+            try:
+                with urllib.request.urlopen(req) as response:
+                    if response.status in (200, 201):
+                        pushed_count += len(batch)
+                        percent = int((pushed_count / total_steps) * 100)
+                        sys.stdout.write(f"\r  Uploading: {percent:3d}% ({pushed_count}/{total_steps})")
+                        sys.stdout.flush()
+                        
+                        # Update local remote state iteratively
+                        meta["remote"]["last_pushed_step_id"] = batch[-1]["id"]
+                        meta["remote"]["last_pushed_ts"] = int(Path('.').stat().st_mtime) 
+                        with open(store.paths.sessions_dir / session_id / "meta.json", "w", encoding="utf-8") as f:
+                            json.dump(meta, f, indent=2)
+                    else:
+                        print(f"\nError: Backend returned status {response.status}", file=sys.stderr)
+                        sys.exit(1)
+            except urllib.error.URLError as req_err:
+                print(f"\nError: Could not connect to backend ({endpoint}): {req_err}", file=sys.stderr)
+                sys.exit(1)
+                
+        print(f"\nSuccess: Synced session {session_id} to backend.")
+            
+    except Exception as e:
+        print(f"\nError: Failed to push session: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def config_show_command(_: argparse.Namespace) -> None:
@@ -609,6 +727,17 @@ def main() -> None:
     # Alias `mach session <id>` to `mach show <id>` implicitly.
     if len(sys.argv) >= 3 and sys.argv[1] == "session" and sys.argv[2] not in ("start", "end", "-h", "--help"):
         sys.argv[1] = "show"
+
+    login_parser = subparsers.add_parser("login", help="Authenticate with the Mach web platform.")
+    login_parser.add_argument("--token", help="Your Personal Access Token.")
+    login_parser.set_defaults(handler=login_command)
+
+    logout_parser = subparsers.add_parser("logout", help="Log out of the Mach web platform.")
+    logout_parser.set_defaults(handler=logout_command)
+
+    push_parser = subparsers.add_parser("push", help="Push a session to the Mach web platform.")
+    push_parser.add_argument("session_id", help="The ID of the session to push.")
+    push_parser.set_defaults(handler=push_command)
 
     try:
         args = parser.parse_args()

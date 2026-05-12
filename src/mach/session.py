@@ -7,7 +7,7 @@ from typing import Any
 
 from mach.config import DEFAULT_CONFIG, merge_config
 from mach.db import connect, init_db, reset_db
-from mach.git_utils import current_branch, head_commit
+from mach.git_utils import current_branch, head_commit, remote_origin_url, repository_name
 from mach.locking import file_lock
 from mach.merkle import chain_hash, hash_payload
 from mach.repository import resolve_paths
@@ -89,6 +89,13 @@ class SessionStore:
             "ended_at": None,
             "agent": agent,
             "branch": current_branch(self.paths.repo_root),
+            "remote": {
+                "url": remote_origin_url(self.paths.repo_root),
+                "repository_name": repository_name(self.paths.repo_root),
+                "last_pushed_step_id": None,
+                "pushed_root": None,
+                "last_pushed_ts": 0
+            },
             "pre_commit": pre_commit,
             "post_commit": None,
             "task_desc": task_desc,
@@ -549,7 +556,8 @@ class SessionStore:
             caused_by=step_dict.get("caused_by", [prev_step_id] if prev_step_id else []),
             risk_level=step_dict.get("risk_level", "none"),
             tool=tool_obj,
-            file_changes=file_changes
+            file_changes=file_changes,
+            commit_hash=head_commit(self.paths.repo_root)
         )
 
         payload = step_obj.to_dict()

@@ -25,3 +25,15 @@ def current_branch(repo_root: Path) -> str | None:
 def head_commit(repo_root: Path) -> str | None:
     return _run_git(repo_root, "rev-parse", "HEAD")
 
+def remote_origin_url(repo_root: Path) -> str | None:
+    return _run_git(repo_root, "config", "--get", "remote.origin.url")
+
+def repository_name(repo_root: Path) -> str:
+    url = remote_origin_url(repo_root)
+    if url:
+        base = url.split("/")[-1]
+        if base.endswith(".git"):
+            base = base[:-4]
+        return base
+    return repo_root.name
+

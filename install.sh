@@ -38,19 +38,17 @@ else
     cd "$INSTALL_DIR"
 fi
 
-# 3. Setup Virtual Environment
-echo "Setting up Python virtual environment..."
-python3 -m venv .venv
-
-# 4. Install dependencies
-echo "Installing Mach dependencies..."
-./.venv/bin/pip install --upgrade pip setuptools wheel quiet
-./.venv/bin/pip install -e .
-
-# 5. Create symlink
-echo "Creating symlink..."
+# 3. Create executable wrapper (No VENV needed since we have zero dependencies!)
+echo "Creating executable wrapper..."
 mkdir -p "$BIN_DIR"
-ln -sf "$INSTALL_DIR/.venv/bin/mach" "$BIN_DIR/$EXE_NAME"
+
+cat << EOF > "$BIN_DIR/$EXE_NAME"
+#!/usr/bin/env bash
+export PYTHONPATH="$INSTALL_DIR/src:\$PYTHONPATH"
+exec python3 -m mach.cli "\$@"
+EOF
+
+chmod +x "$BIN_DIR/$EXE_NAME"
 
 # 6. Verify PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then

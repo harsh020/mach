@@ -15,12 +15,10 @@ NC='\033[0m' # No Color
 
 echo -e "${BLUE}Uninstalling Mach Execution Ledger...${NC}"
 
-# 1. Remove the symlink
-if [ -L "$BIN_DIR/$EXE_NAME" ]; then
-    echo "Removing executable symlink from $BIN_DIR/$EXE_NAME..."
+# 1. Remove the executable wrapper
+if [ -f "$BIN_DIR/$EXE_NAME" ]; then
+    echo "Removing executable wrapper from $BIN_DIR/$EXE_NAME..."
     rm "$BIN_DIR/$EXE_NAME"
-elif [ -e "$BIN_DIR/$EXE_NAME" ]; then
-    echo -e "${RED}Warning: $BIN_DIR/$EXE_NAME exists but is not a symlink. Skipping removal to be safe.${NC}"
 fi
 
 # 2. Remove the installation directory

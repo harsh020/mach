@@ -282,29 +282,6 @@ def config_show_command(args: argparse.Namespace) -> None:
 
 def config_set_command(args: argparse.Namespace) -> None:
     store = SessionStore()
-    updates = {}
-    if args.enabled is not None:
-        updates["enabled"] = args.enabled == "true"
-    if args.auto_tracking is not None:
-        updates["auto_tracking"] = args.auto_tracking == "true"
-    if args.commit_closes_session is not None:
-        updates["commit_closes_session"] = args.commit_closes_session == "true"
-    if args.idle_timeout_sec is not None:
-        updates["idle_timeout_sec"] = None if args.idle_timeout_sec == "none" else int(args.idle_timeout_sec)
-    if args.poll_interval_sec is not None:
-        updates["poll_interval_sec"] = float(args.poll_interval_sec)
-    if args.hook_agents is not None:
-        updates["hook_agents"] = [agent for agent in args.hook_agents.split(",") if agent]
-    if args.use_tui is not None:
-        updates["use_tui"] = args.use_tui == "true"
-    if args.db_enabled is not None:
-        updates["db_enabled"] = args.db_enabled == "true"
-    store.update_config(updates)
-    print("Success: Configuration updated.")
-
-
-def configure_command(args: argparse.Namespace) -> None:
-    store = SessionStore()
     current = store.read_config()
     updates = {}
 
@@ -572,22 +549,6 @@ def main() -> None:
     disable_parser = subparsers.add_parser("disable", help="Disable Mach hooks and background tracking in this repo.")
     disable_parser.set_defaults(handler=disable_command)
 
-    configure_parser = subparsers.add_parser("configure", help="High-level setup command for managed agents, hooks, and tracking.")
-    configure_parser.add_argument("--enable", action="store_true")
-    configure_parser.add_argument("--disable", action="store_true")
-    configure_parser.add_argument("--auto-tracking", choices=["true", "false"])
-    configure_parser.add_argument("--commit-closes-session", choices=["true", "false"])
-    configure_parser.add_argument("--idle-timeout-sec")
-    configure_parser.add_argument("--poll-interval-sec")
-    configure_parser.add_argument("--hook-agents")
-    configure_parser.add_argument("--add-agent", action="append")
-    configure_parser.add_argument("--remove-agent", action="append")
-    configure_parser.add_argument("--store-content", help="Comma-separated step types to store content for (e.g. input,reasoning,tool,output)")
-    configure_parser.add_argument("--db-enabled", choices=["true", "false"])
-    configure_parser.add_argument("--apply", action="store_true", help="Apply current config to hooks and tracker after updating.")
-    configure_parser.add_argument("--refresh-hooks", action="store_true", help="Reinstall managed hooks after updating config.")
-    configure_parser.set_defaults(handler=configure_command)
-
     session_parser = subparsers.add_parser("session", help="Manage sessions.")
     session_subparsers = session_parser.add_subparsers(dest="session_command", required=True)
 
@@ -698,14 +659,20 @@ def main() -> None:
     config_show_parser.set_defaults(handler=config_show_command)
 
     config_set_parser = config_subparsers.add_parser("set", help="Update Mach config values.")
-    config_set_parser.add_argument("--enabled", choices=["true", "false"])
+    config_set_parser.add_argument("--enable", action="store_true")
+    config_set_parser.add_argument("--disable", action="store_true")
     config_set_parser.add_argument("--auto-tracking", choices=["true", "false"])
     config_set_parser.add_argument("--commit-closes-session", choices=["true", "false"])
     config_set_parser.add_argument("--idle-timeout-sec")
     config_set_parser.add_argument("--poll-interval-sec")
     config_set_parser.add_argument("--hook-agents")
+    config_set_parser.add_argument("--add-agent", action="append")
+    config_set_parser.add_argument("--remove-agent", action="append")
+    config_set_parser.add_argument("--store-content", help="Comma-separated step types to store content for (e.g. input,reasoning,tool,output)")
     config_set_parser.add_argument("--use-tui", choices=["true", "false"])
     config_set_parser.add_argument("--db-enabled", choices=["true", "false"])
+    config_set_parser.add_argument("--apply", action="store_true", help="Apply current config to hooks and tracker after updating.")
+    config_set_parser.add_argument("--refresh-hooks", action="store_true", help="Reinstall managed hooks after updating config.")
     config_set_parser.set_defaults(handler=config_set_command)
 
     track_parser = subparsers.add_parser("track", help="Manage automatic repository tracking.")

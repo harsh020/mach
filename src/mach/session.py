@@ -506,7 +506,7 @@ class SessionStore:
         step_num = len(existing_steps) + 1
 
         config = self.read_config()
-        store_content = config.get("store_content", ["input"])
+        store_content = config.get("store_content", ["input", "output", "reasoning", "tool"])
 
         step_id = step_dict.get("id", f"step_{uuid.uuid4().hex}")
         ts = step_dict.get("ts", int(time()))

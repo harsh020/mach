@@ -22,6 +22,7 @@ DEFAULT_CONFIG = {
         "dist",
         "build",
     ],
+    "store_content": ["input", "output", "reasoning", "tool"],
 }
 
 

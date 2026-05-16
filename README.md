@@ -121,9 +121,13 @@ mach config set --use-tui false
 - `mach verify`: Cryptographically verify the integrity of the JSONL ledger and Blob hashes.
 - `mach fsck`: Rebuild the SQLite search index from scratch using the raw Blob store.
 
-### Daemon Controls
+### Daemon Controls & Background Tracking
 - `mach track start|stop|status`: Manage the background ingestion process.
 - `mach hooks status`: Check the health and presence of your AI agent intercepts.
+
+> [!NOTE]
+> **The `workspace_observer` pseudo-agent:**
+> If you see `workspace_observer` in your `mach log`, this is Mach's background daemon. If an AI edits a file but fails to properly report it via its hooks (or if you manually edit a file during an active AI session), the daemon detects the "orphan" file system changes and securely logs them under `workspace_observer`. This guarantees your execution ledger is 100% accurate, even if the AI's telemetry is incomplete.
 
 ---
 <div align="center">

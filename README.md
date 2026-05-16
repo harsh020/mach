@@ -86,13 +86,13 @@ mach config show
 ```
 
 **To change a configuration:**
-You can use `mach config set <key> <value>` for low-level overrides, or use the safer `mach configure` command for high-level setup.
+Use the `mach config set` command with the appropriate flags.
 ```bash
 # Example: Disable the SQLite database indexing
-mach config set db_enabled false
+mach config set --db-enabled false
 
 # Example: Disable the TUI and revert to classic terminal logs
-mach config set use_tui false
+mach config set --use-tui false
 ```
 
 ### Configurable Keys:
@@ -106,6 +106,7 @@ mach config set use_tui false
 | `hook_agents` | `[...]` | List of AI agents to automatically install intercepts for. |
 | `ignore_paths` | `[...]` | Directories to ignore when calculating file diffs (e.g., `node_modules`). |
 | `poll_interval_sec`| `2` | How often the background daemon checks the inbox. |
+| `store_content` | `["input", "output", "reasoning", "tool"]` | Step types to actively capture and store as blob data. |
 
 ## 💻 Command Reference
 

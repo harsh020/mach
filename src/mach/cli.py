@@ -269,6 +269,26 @@ def push_command(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+
+def update_command(_: argparse.Namespace) -> None:
+    import subprocess
+    install_dir = Path.home() / ".mach"
+    if not install_dir.exists() or not (install_dir / ".git").exists():
+        print("Error: Mach is not installed globally at ~/.mach or is not a git repository.", file=sys.stderr)
+        sys.exit(1)
+        
+    print("Updating Mach...")
+    try:
+        subprocess.check_call(
+            ["git", "pull", "origin", "master"],
+            cwd=str(install_dir)
+        )
+        print("Success: Mach updated successfully.")
+    except subprocess.CalledProcessError:
+        print("Error: Failed to update Mach.", file=sys.stderr)
+        sys.exit(1)
+
+
 def config_show_command(args: argparse.Namespace) -> None:
     config = SessionStore().read_config()
     if getattr(args, "json", False):
@@ -709,6 +729,9 @@ def main() -> None:
     push_parser = subparsers.add_parser("push", help="Push a session to the Mach web platform.")
     push_parser.add_argument("session_id", help="The ID of the session to push.")
     push_parser.set_defaults(handler=push_command)
+
+    update_parser = subparsers.add_parser("update", help="Update the global Mach installation to the latest version.")
+    update_parser.set_defaults(handler=update_command)
 
     try:
         args = parser.parse_args()

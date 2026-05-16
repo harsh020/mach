@@ -32,12 +32,12 @@ Mach requires Python 3.9+ and is designed to be installed globally via our stand
 
 ```bash
 # Install Mach globally
-curl -fsSL https://raw.githubusercontent.com/harsh020/mach/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/harsh020/mach/master/install.sh | bash
 ```
 
 To completely uninstall Mach (safely preserving your existing repository logs):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/harsh020/mach/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/harsh020/mach/master/uninstall.sh | bash
 ```
 
 ## 🏁 Quick Start

@@ -112,8 +112,7 @@ mach config set --use-tui false
 
 ### Setup & Configuration
 - `mach init`: Bootstrap the repository, interactively select hooks, and start the daemon.
-- `mach configure`: Re-evaluate your hook settings (e.g. `mach configure --db-enabled false`).
-- `mach config show|set`: View or manually override low-level config tokens.
+- `mach config show|set`: View or update Mach configuration (e.g. `mach config set --db-enabled false`).
 - `mach enable` / `mach disable`: Globally toggle tracking without losing configuration.
 
 ### Session & Event Management

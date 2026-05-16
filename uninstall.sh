@@ -3,7 +3,7 @@
 set -e
 
 # Configuration
-INSTALL_DIR="$HOME/.mach-cli"
+INSTALL_DIR="$HOME/.mach"
 BIN_DIR="$HOME/.local/bin"
 EXE_NAME="mach"
 

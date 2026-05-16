@@ -269,8 +269,15 @@ def push_command(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def config_show_command(_: argparse.Namespace) -> None:
-    emit(SessionStore().read_config())
+def config_show_command(args: argparse.Namespace) -> None:
+    config = SessionStore().read_config()
+    if getattr(args, "json", False):
+        emit(config)
+    else:
+        print("Mach Configuration:")
+        print("-" * 50)
+        for key, value in sorted(config.items()):
+            print(f"{key:25} : {value}")
 
 
 def config_set_command(args: argparse.Namespace) -> None:
@@ -687,6 +694,7 @@ def main() -> None:
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
 
     config_show_parser = config_subparsers.add_parser("show", help="Show merged Mach config.")
+    config_show_parser.add_argument("--json", action="store_true", help="Output raw JSON.")
     config_show_parser.set_defaults(handler=config_show_command)
 
     config_set_parser = config_subparsers.add_parser("set", help="Update Mach config values.")

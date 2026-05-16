@@ -26,11 +26,12 @@ class CodexHookAdapter(HookAdapter):
         command = command_name()
         hooks = strip_matching_commands(read_json_file(self.hooks_path), "mach hooks dispatch --agent codex")
         additions = {
-            "SessionStart": [self._entry(f'{command} hooks dispatch --agent codex --event SessionStart --repo-root "{self.repo_root}"')],
-            "UserPromptSubmit": [self._entry(f'{command} hooks dispatch --agent codex --event UserPromptSubmit --repo-root "{self.repo_root}"')],
-            "PreToolUse": [self._entry(f'{command} hooks dispatch --agent codex --event PreToolUse --repo-root "{self.repo_root}"')],
-            "PostToolUse": [self._entry(f'{command} hooks dispatch --agent codex --event PostToolUse --repo-root "{self.repo_root}"')],
-            "Stop": [self._entry(f'{command} hooks dispatch --agent codex --event Stop --repo-root "{self.repo_root}"')],
+            "SessionStart": [self._entry(f'{command} hooks dispatch --agent codex --event SessionStart')],
+            "SessionEnd": [self._entry(f'{command} hooks dispatch --agent codex --event SessionEnd')],
+            "UserPromptSubmit": [self._entry(f'{command} hooks dispatch --agent codex --event UserPromptSubmit')],
+            "PreToolUse": [self._entry(f'{command} hooks dispatch --agent codex --event PreToolUse')],
+            "PostToolUse": [self._entry(f'{command} hooks dispatch --agent codex --event PostToolUse')],
+            "Stop": [self._entry(f'{command} hooks dispatch --agent codex --event Stop')],
         }
         write_json_file(self.hooks_path, merge_event_hooks(hooks, additions))
         self._enable_feature()

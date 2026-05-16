@@ -21,14 +21,14 @@ class CopilotHookAdapter(HookAdapter):
         payload = {
             "version": 1,
             "hooks": {
-                "sessionStart": [self._command(f'{command} hooks dispatch --agent copilot --event sessionStart --repo-root "{self.repo_root}"')],
-                "sessionEnd": [self._command(f'{command} hooks dispatch --agent copilot --event sessionEnd --repo-root "{self.repo_root}"')],
-                "userPromptSubmitted": [self._command(f'{command} hooks dispatch --agent copilot --event userPromptSubmitted --repo-root "{self.repo_root}"')],
-                "preToolUse": [self._command(f'{command} hooks dispatch --agent copilot --event preToolUse --repo-root "{self.repo_root}"')],
-                "postToolUse": [self._command(f'{command} hooks dispatch --agent copilot --event postToolUse --repo-root "{self.repo_root}"')],
-                "agentStop": [self._command(f'{command} hooks dispatch --agent copilot --event agentStop --repo-root "{self.repo_root}"')],
-                "subagentStop": [self._command(f'{command} hooks dispatch --agent copilot --event subagentStop --repo-root "{self.repo_root}"')],
-                "errorOccurred": [self._command(f'{command} hooks dispatch --agent copilot --event errorOccurred --repo-root "{self.repo_root}"')],
+                "sessionStart": [self._command(f'{command} hooks dispatch --agent copilot --event sessionStart')],
+                "sessionEnd": [self._command(f'{command} hooks dispatch --agent copilot --event sessionEnd')],
+                "userPromptSubmitted": [self._command(f'{command} hooks dispatch --agent copilot --event userPromptSubmitted')],
+                "preToolUse": [self._command(f'{command} hooks dispatch --agent copilot --event preToolUse')],
+                "postToolUse": [self._command(f'{command} hooks dispatch --agent copilot --event postToolUse')],
+                "agentStop": [self._command(f'{command} hooks dispatch --agent copilot --event agentStop')],
+                "subagentStop": [self._command(f'{command} hooks dispatch --agent copilot --event subagentStop')],
+                "errorOccurred": [self._command(f'{command} hooks dispatch --agent copilot --event errorOccurred')],
             },
         }
         write_json_file(self.path, payload)

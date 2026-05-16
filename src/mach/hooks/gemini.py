@@ -30,13 +30,13 @@ class GeminiHookAdapter(HookAdapter):
         settings = strip_matching_commands(read_json_file(self.path), "mach hooks dispatch --agent gemini")
         command = command_name()
         additions = {
-            "SessionStart": [self._entry(f'{command} hooks dispatch --agent gemini --event SessionStart --repo-root "{self.repo_root}" --stdout-mode empty-json')],
-            "BeforeAgent": [self._entry(f'{command} hooks dispatch --agent gemini --event BeforeAgent --repo-root "{self.repo_root}" --stdout-mode empty-json')],
-            "BeforeTool": [self._tool_entry(f'{command} hooks dispatch --agent gemini --event BeforeTool --repo-root "{self.repo_root}" --stdout-mode empty-json')],
-            "AfterTool": [self._tool_entry(f'{command} hooks dispatch --agent gemini --event AfterTool --repo-root "{self.repo_root}" --stdout-mode empty-json')],
-            "AfterModel": [self._entry(f'{command} hooks dispatch --agent gemini --event AfterModel --repo-root "{self.repo_root}" --stdout-mode empty-json')],
-            "AfterAgent": [self._entry(f'{command} hooks dispatch --agent gemini --event AfterAgent --repo-root "{self.repo_root}" --stdout-mode empty-json')],
-            "SessionEnd": [self._entry(f'{command} hooks dispatch --agent gemini --event SessionEnd --repo-root "{self.repo_root}" --stdout-mode empty-json')],
+            "SessionStart": [self._entry(f'{command} hooks dispatch --agent gemini --event SessionStart --stdout-mode empty-json')],
+            "BeforeAgent": [self._entry(f'{command} hooks dispatch --agent gemini --event BeforeAgent --stdout-mode empty-json')],
+            "BeforeTool": [self._tool_entry(f'{command} hooks dispatch --agent gemini --event BeforeTool --stdout-mode empty-json')],
+            "AfterTool": [self._tool_entry(f'{command} hooks dispatch --agent gemini --event AfterTool --stdout-mode empty-json')],
+            "AfterModel": [self._entry(f'{command} hooks dispatch --agent gemini --event AfterModel --stdout-mode empty-json')],
+            "AfterAgent": [self._entry(f'{command} hooks dispatch --agent gemini --event AfterAgent --stdout-mode empty-json')],
+            "SessionEnd": [self._entry(f'{command} hooks dispatch --agent gemini --event SessionEnd --stdout-mode empty-json')],
         }
         write_json_file(self.path, merge_event_hooks(settings, additions))
         return {"agent": self.name, "installed": True, "path": str(self.path), "support": self.support}

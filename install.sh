@@ -28,14 +28,18 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 # 2. Clone or update repository
-if [ -d "$INSTALL_DIR" ]; then
+if [ -d "$INSTALL_DIR/.git" ]; then
     echo "Updating existing installation..."
     cd "$INSTALL_DIR"
     git pull origin master > /dev/null 2>&1
 else
     echo "Downloading Mach..."
-    git clone "$REPO_URL" "$INSTALL_DIR" > /dev/null 2>&1
+    mkdir -p "$INSTALL_DIR"
     cd "$INSTALL_DIR"
+    git init > /dev/null 2>&1
+    git remote add origin "$REPO_URL" > /dev/null 2>&1
+    git fetch origin master > /dev/null 2>&1
+    git reset --hard origin/master > /dev/null 2>&1
 fi
 
 # 3. Setup Virtual Environment & Install

@@ -10,7 +10,10 @@ def read_json_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+        try:
+            return json.load(handle)
+        except json.JSONDecodeError:
+            return {}
 
 
 def write_json_file(path: Path, payload: dict[str, Any]) -> None:

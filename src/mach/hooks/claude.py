@@ -29,17 +29,17 @@ class ClaudeHookAdapter(HookAdapter):
         hooks = strip_matching_commands(read_json_file(self.settings_path), "mach hooks dispatch --agent claude")
         command = command_name()
         additions = {
-            "SessionStart": [self._event_entry(f'{command} hooks dispatch --agent claude --event SessionStart --repo-root "{self.repo_root}"')],
-            "SessionEnd": [self._event_entry(f'{command} hooks dispatch --agent claude --event SessionEnd --repo-root "{self.repo_root}"')],
-            "UserPromptSubmit": [self._event_entry(f'{command} hooks dispatch --agent claude --event UserPromptSubmit --repo-root "{self.repo_root}"')],
-            "Stop": [self._event_entry(f'{command} hooks dispatch --agent claude --event Stop --repo-root "{self.repo_root}"')],
-            "SubagentStart": [self._event_entry(f'{command} hooks dispatch --agent claude --event SubagentStart --repo-root "{self.repo_root}"')],
-            "SubagentStop": [self._event_entry(f'{command} hooks dispatch --agent claude --event SubagentStop --repo-root "{self.repo_root}"')],
-            "TaskCreated": [self._event_entry(f'{command} hooks dispatch --agent claude --event TaskCreated --repo-root "{self.repo_root}"')],
-            "TaskCompleted": [self._event_entry(f'{command} hooks dispatch --agent claude --event TaskCompleted --repo-root "{self.repo_root}"')],
-            "PreToolUse": [self._tool_entry(f'{command} hooks dispatch --agent claude --event PreToolUse --repo-root "{self.repo_root}"')],
-            "PostToolUse": [self._tool_entry(f'{command} hooks dispatch --agent claude --event PostToolUse --repo-root "{self.repo_root}"')],
-            "PostToolUseFailure": [self._tool_entry(f'{command} hooks dispatch --agent claude --event PostToolUseFailure --repo-root "{self.repo_root}"')],
+            "SessionStart": [self._event_entry(f'{command} hooks dispatch --agent claude --event SessionStart')],
+            "SessionEnd": [self._event_entry(f'{command} hooks dispatch --agent claude --event SessionEnd')],
+            "UserPromptSubmit": [self._event_entry(f'{command} hooks dispatch --agent claude --event UserPromptSubmit')],
+            "Stop": [self._event_entry(f'{command} hooks dispatch --agent claude --event Stop')],
+            "SubagentStart": [self._event_entry(f'{command} hooks dispatch --agent claude --event SubagentStart')],
+            "SubagentStop": [self._event_entry(f'{command} hooks dispatch --agent claude --event SubagentStop')],
+            "TaskCreated": [self._event_entry(f'{command} hooks dispatch --agent claude --event TaskCreated')],
+            "TaskCompleted": [self._event_entry(f'{command} hooks dispatch --agent claude --event TaskCompleted')],
+            "PreToolUse": [self._tool_entry(f'{command} hooks dispatch --agent claude --event PreToolUse')],
+            "PostToolUse": [self._tool_entry(f'{command} hooks dispatch --agent claude --event PostToolUse')],
+            "PostToolUseFailure": [self._tool_entry(f'{command} hooks dispatch --agent claude --event PostToolUseFailure')],
         }
         merged = merge_event_hooks(hooks, additions)
         write_json_file(self.settings_path, merged)

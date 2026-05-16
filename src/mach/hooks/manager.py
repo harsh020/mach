@@ -48,11 +48,18 @@ class HookManager:
         return list(self.adapters.keys())
 
     def dispatch(self, agent: str, event_name: str, raw_payload: str, repo_root: Path | None = None) -> HookDispatchResult:
+        root = (repo_root or self.repo_root).resolve()
+        
+        # Abort silently if Mach is not initialized in the current directory
+        from mach.repository import resolve_paths
+        if not resolve_paths(root).config_path.exists():
+            return HookDispatchResult(handled=False)
+            
         adapter = self.adapters.get(agent)
         if not adapter:
             raise MachError(f"Unknown hook agent: {agent}")
         payload = json.loads(raw_payload) if raw_payload.strip() else {}
-        result = adapter.dispatch(event_name, payload, (repo_root or self.repo_root).resolve())
+        result = adapter.dispatch(event_name, payload, root)
         if result.event:
             self.ingest.submit_event(result.event)
         return result

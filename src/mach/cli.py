@@ -528,14 +528,20 @@ def hooks_status_command(args: argparse.Namespace) -> None:
 
 def hooks_dispatch_command(args: argparse.Namespace) -> None:
     repo_root = Path(args.repo_root) if args.repo_root else None
-    manager = HookManager(repo_root=repo_root)
     raw_payload = sys.stdin.read()
-    result = manager.dispatch(
-        agent=args.agent,
-        event_name=args.event,
-        raw_payload=raw_payload,
-        repo_root=repo_root,
-    )
+    try:
+        manager = HookManager(repo_root=repo_root)
+        result = manager.dispatch(
+            agent=args.agent,
+            event_name=args.event,
+            raw_payload=raw_payload,
+            repo_root=repo_root,
+        )
+    except Exception:
+        if args.stdout_mode == "empty-json":
+            sys.stdout.write("{}")
+            return
+        raise
     if args.stdout_mode == "empty-json":
         sys.stdout.write(result.emitted_output or "{}")
     elif args.stdout_mode == "passthrough" and result.emitted_output:

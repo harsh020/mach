@@ -125,4 +125,3 @@ class GeminiHookAdapter(HookAdapter):
                 "step": {"type": step_type, "content": content},
             },
         )
-

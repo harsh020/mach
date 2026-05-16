@@ -140,4 +140,3 @@ class ClaudeHookAdapter(HookAdapter):
                 "step": step,
             },
         )
-

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +63,22 @@ def merge_event_hooks(hooks: dict[str, Any], additions: dict[str, list[dict[str,
 
 
 def command_name() -> str:
-    return os.environ.get("MACH_HOOKS_BIN", "mach")
+    override = os.environ.get("MACH_HOOKS_BIN")
+    if override:
+        return override
+
+    local_bin = Path.home() / ".local" / "bin" / "mach"
+    if local_bin.exists() and os.access(local_bin, os.X_OK):
+        return shlex.quote(str(local_bin))
+
+    resolved = shutil.which("mach")
+    if resolved:
+        return shlex.quote(resolved)
+
+    package_root = Path(__file__).resolve().parents[2]
+    python = shlex.quote(sys.executable)
+    pythonpath = shlex.quote(str(package_root))
+    return f"PYTHONPATH={pythonpath} {python} -m mach.cli"
 
 
 def first_present(payload: dict[str, Any], *keys: str) -> Any:
@@ -205,4 +223,3 @@ def extract_tool_details(repo_root: Path, tool_name: str, tool_input: Any) -> tu
             file_changes.append(change)
             
     return category, file_changes
-

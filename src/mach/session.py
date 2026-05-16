@@ -71,7 +71,8 @@ class SessionStore:
                     (pre_commit,)
                 ).fetchone()
                 if row and row["c"] > 0:
-                    print(f"\033[93mWarning\033[0m: There are {row['c']} other active AI session(s) modifying this same commit state concurrently.")
+                    import sys
+                    print(f"\033[93mWarning\033[0m: There are {row['c']} other active AI session(s) modifying this same commit state concurrently.", file=sys.stderr)
         except Exception:
             pass  # fail gracefully if db not ready
 
@@ -641,10 +642,10 @@ class SessionStore:
                     payload["step_num"],
                     payload["ts"],
                     payload["type"],
-                    payload["content"],
-                    payload["content_hash"],
+                    payload.get("content"),
+                    payload.get("content_hash"),
                     canonical_json(payload.get("caused_by", [])),
-                    payload["risk_level"],
+                    payload.get("risk_level", "none"),
                 ),
             )
 

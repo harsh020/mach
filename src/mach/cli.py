@@ -286,6 +286,17 @@ def update_command(_: argparse.Namespace) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
+        
+        # Also update the python environment if it exists
+        venv_pip = install_dir / "venv" / "bin" / "pip"
+        if venv_pip.exists():
+            subprocess.check_call(
+                [str(venv_pip), "install", "--upgrade", "."],
+                cwd=str(install_dir),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
         print("Success: Mach updated successfully.")
     except subprocess.CalledProcessError:
         print("Error: Failed to update Mach.", file=sys.stderr)

@@ -38,13 +38,18 @@ else
     cd "$INSTALL_DIR"
 fi
 
-# 3. Create executable wrapper
+# 3. Setup Virtual Environment & Install
+echo "Setting up isolated Python environment..."
+python3 -m venv "$INSTALL_DIR/venv" > /dev/null 2>&1
+"$INSTALL_DIR/venv/bin/pip" install --upgrade pip > /dev/null 2>&1
+"$INSTALL_DIR/venv/bin/pip" install "$INSTALL_DIR" > /dev/null 2>&1
+
+# 4. Create executable wrapper
 mkdir -p "$BIN_DIR"
 
 cat << EOF > "$BIN_DIR/$EXE_NAME"
 #!/usr/bin/env bash
-export PYTHONPATH="$INSTALL_DIR/src:\$PYTHONPATH"
-exec python3 -m mach.cli "\$@"
+exec "$INSTALL_DIR/venv/bin/mach" "\$@"
 EOF
 
 chmod +x "$BIN_DIR/$EXE_NAME"

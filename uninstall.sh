@@ -24,6 +24,7 @@ fi
 if [ -d "$INSTALL_DIR/.git" ]; then
     rm -rf "$INSTALL_DIR/.git"
     rm -rf "$INSTALL_DIR/src"
+    rm -rf "$INSTALL_DIR/venv"
     rm -f "$INSTALL_DIR/pyproject.toml"
     rm -f "$INSTALL_DIR/README.md"
     rm -f "$INSTALL_DIR/install.sh"

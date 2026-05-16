@@ -29,17 +29,16 @@ fi
 
 # 2. Clone or update repository
 if [ -d "$INSTALL_DIR" ]; then
-    echo "Updating existing installation in $INSTALL_DIR..."
+    echo "Updating existing installation..."
     cd "$INSTALL_DIR"
-    git pull origin master
+    git pull origin master > /dev/null 2>&1
 else
-    echo "Cloning repository to $INSTALL_DIR..."
-    git clone "$REPO_URL" "$INSTALL_DIR"
+    echo "Downloading Mach..."
+    git clone "$REPO_URL" "$INSTALL_DIR" > /dev/null 2>&1
     cd "$INSTALL_DIR"
 fi
 
-# 3. Create executable wrapper (No VENV needed since we have zero dependencies!)
-echo "Creating executable wrapper..."
+# 3. Create executable wrapper
 mkdir -p "$BIN_DIR"
 
 cat << EOF > "$BIN_DIR/$EXE_NAME"

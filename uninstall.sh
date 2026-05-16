@@ -2,35 +2,33 @@
 
 set -e
 
-# Configuration
 INSTALL_DIR="$HOME/.mach"
 BIN_DIR="$HOME/.local/bin"
 EXE_NAME="mach"
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-echo -e "${BLUE}Uninstalling Mach Execution Ledger...${NC}"
+echo -e "${BLUE}Uninstalling Mach...${NC}"
 
-# 1. Remove the executable wrapper
+# Remove executable
 if [ -f "$BIN_DIR/$EXE_NAME" ]; then
-    echo "Removing executable wrapper from $BIN_DIR/$EXE_NAME..."
     rm "$BIN_DIR/$EXE_NAME"
 fi
 
-# 2. Remove the installation directory
-if [ -d "$INSTALL_DIR" ]; then
-    echo "Removing installation directory $INSTALL_DIR..."
-    rm -rf "$INSTALL_DIR"
-else
-    echo "Installation directory $INSTALL_DIR not found. It may have already been removed."
+# We purposefully do NOT delete ~/.mach entirely because it contains user's logs
+# We only delete the source code if they installed via the install script
+if [ -d "$INSTALL_DIR/.git" ]; then
+    rm -rf "$INSTALL_DIR/.git"
+    rm -rf "$INSTALL_DIR/src"
+    rm -f "$INSTALL_DIR/pyproject.toml"
+    rm -f "$INSTALL_DIR/README.md"
+    rm -f "$INSTALL_DIR/install.sh"
+    rm -f "$INSTALL_DIR/uninstall.sh"
 fi
 
-# Note: We intentionally do NOT remove user data in ~/.mach or inside repositories.
-# This ensures that uninstalling the CLI doesn't wipe out their valuable execution logs.
-
-echo -e "\n${GREEN}Success! Mach was uninstalled successfully.${NC}"
-echo "Note: Your existing execution logs in .mach/ directories were kept intact."
+echo -e "\n${GREEN}Mach has been uninstalled.${NC}"
+echo -e "Note: Your local database and logs in .mach directories were safely preserved."

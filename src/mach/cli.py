@@ -270,6 +270,7 @@ def push_command(args: argparse.Namespace) -> None:
 
 
 
+
 def update_command(_: argparse.Namespace) -> None:
     import subprocess
     install_dir = Path.home() / ".mach"
@@ -281,7 +282,9 @@ def update_command(_: argparse.Namespace) -> None:
     try:
         subprocess.check_call(
             ["git", "pull", "origin", "master"],
-            cwd=str(install_dir)
+            cwd=str(install_dir),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
         )
         print("Success: Mach updated successfully.")
     except subprocess.CalledProcessError:

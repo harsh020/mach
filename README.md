@@ -28,16 +28,31 @@ Mach is built for uncompromising speed, durability, and a native developer exper
 
 ## 🚀 Installation
 
-Mach requires Python 3.9+ and is designed to be installed globally via our standalone installer script. It automatically isolates itself so it never conflicts with your system Python.
+Mach requires Python 3.9+ and can be installed via professional package managers or a standalone installer.
+
+### Option 1: Standalone Script (Recommended)
+This is the fastest way to get started. It securely sets up an isolated Mach environment.
 
 ```bash
 # Install Mach globally
 curl -fsSL https://raw.githubusercontent.com/harsh020/mach/master/install.sh | bash
 ```
+To update later, you can just run `mach update`.
 
-To completely uninstall Mach (safely preserving your existing repository logs):
+To uninstall:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/harsh020/mach/master/uninstall.sh | bash
+```
+
+### Option 2: via Pipx
+If you prefer managing your Python CLIs with [pipx](https://pipx.pypa.io/stable/):
+
+```bash
+pipx install git+https://github.com/harsh020/mach.git
+```
+To update via pipx:
+```bash
+pipx upgrade mach
 ```
 
 ## 🏁 Quick Start

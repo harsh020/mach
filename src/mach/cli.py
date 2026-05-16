@@ -135,7 +135,7 @@ def init_command(args: argparse.Namespace) -> None:
     tracker = TrackerService()
     tracker.ensure_state()
     tracking = tracker.start_daemon() if config.get("auto_tracking", True) else tracker.status()
-    emit({"initialized": True, "mach_dir": str(mach_dir), "tracking": tracking, "hooks": hook_results, "config": config})
+    print(f"Success: Mach initialized in {mach_dir}")
 
 
 def enable_command(_: argparse.Namespace) -> None:
@@ -145,7 +145,7 @@ def enable_command(_: argparse.Namespace) -> None:
     hook_results = manager.install(config.get("hook_agents") or manager.installable_agents())
     tracker = TrackerService()
     tracking = tracker.start_daemon() if config.get("auto_tracking", True) else tracker.status()
-    emit({"enabled": True, "config": config, "hooks": hook_results, "tracking": tracking})
+    print("Success: Mach tracking enabled.")
 
 
 def disable_command(_: argparse.Namespace) -> None:
@@ -153,7 +153,7 @@ def disable_command(_: argparse.Namespace) -> None:
     config = store.update_config({"enabled": False})
     hook_results = HookManager().uninstall(config.get("hook_agents"))
     tracking = TrackerService().stop_daemon()
-    emit({"enabled": False, "config": config, "hooks": hook_results, "tracking": tracking})
+    print("Success: Mach tracking disabled.")
 
 
 def login_command(args: argparse.Namespace) -> None:
@@ -292,7 +292,8 @@ def config_set_command(args: argparse.Namespace) -> None:
         updates["use_tui"] = args.use_tui == "true"
     if args.db_enabled is not None:
         updates["db_enabled"] = args.db_enabled == "true"
-    emit(store.update_config(updates))
+    store.update_config(updates)
+    print("Success: Configuration updated.")
 
 
 def configure_command(args: argparse.Namespace) -> None:
@@ -356,12 +357,7 @@ def configure_command(args: argparse.Namespace) -> None:
         else:
             tracking_result = tracker.stop_daemon()
 
-    emit({
-        "configured": True,
-        "config": config,
-        "hooks": hook_result,
-        "tracking": tracking_result,
-    })
+    print("Success: Configuration applied.")
 
 
 def session_start(args: argparse.Namespace) -> None:

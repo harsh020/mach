@@ -168,3 +168,43 @@ class SessionMeta:
             risk_count=data.get("risk_count", 0),
             remote=RemoteInfo.from_dict(data["remote"]) if "remote" in data else None
         )
+
+@dataclass
+class PushRepositoryBlock:
+    name: str
+    remote_url: str
+    provider: str
+    default_branch: str
+
+@dataclass
+class PushAgentBlock:
+    name: str
+    provider: str
+    version: str
+
+@dataclass
+class PushSessionBlock:
+    local_session_id: str
+    task_desc: Optional[str]
+    branch: str
+    status: str
+    started_at: int
+
+@dataclass
+class PushMetadataBlock:
+    os: str
+    client_version: str
+
+@dataclass
+class PushPayload:
+    repository: PushRepositoryBlock
+    agent: PushAgentBlock
+    session: PushSessionBlock
+    blobs: dict[str, str]
+    steps: list[dict[str, Any]]
+    client_root: str
+    metadata: PushMetadataBlock
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+

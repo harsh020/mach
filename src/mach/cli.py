@@ -9,6 +9,7 @@ import tty
 import getpass
 import urllib.request
 import urllib.error
+import time
 from pathlib import Path
 
 from mach.auth import save_token, logout, get_token
@@ -185,15 +186,23 @@ def push_command(args: argparse.Namespace) -> None:
     
     store = SessionStore()
     try:
+        from mach import __version__
+        from mach.git_utils import (
+            remote_origin_url, repository_name, default_branch,
+            detect_provider, current_branch,
+        )
+
         meta = store.read_session_meta(session_id)
         remote = meta.get("remote", {})
-        repo_name = remote.get("repository_name", "unknown")
+        remote_url = remote.get("url") or remote_origin_url(store.paths.repo_root)
+        repo_name = remote.get("repository_name") or repository_name(store.paths.repo_root)
         print(f"  Repository: {repo_name}")
         print("  Calculating Merkle deltas...")
         
         # Determine what needs to be pushed
         last_pushed_id = remote.get("last_pushed_step_id")
-        steps_file = store.paths.sessions_dir / session_id / "steps.jsonl"
+        session_dir = store.paths.sessions_dir / session_id
+        steps_file = session_dir / "steps.jsonl"
         
         steps_to_push = []
         if steps_file.exists():
@@ -215,7 +224,42 @@ def push_command(args: argparse.Namespace) -> None:
             
         total_steps = len(steps_to_push)
         print(f"  Found {total_steps} unpushed steps. Uploading...")
-        
+
+        # Read merkle root for client_root
+        merkle_path = session_dir / "merkle.sig"
+        merkle = {}
+        if merkle_path.exists():
+            with open(merkle_path, "r", encoding="utf-8") as f:
+                merkle = json.load(f)
+
+        from mach.models import (
+            PushRepositoryBlock, PushAgentBlock, PushSessionBlock,
+            PushMetadataBlock, PushPayload
+        )
+
+        # Build the static parts of the payload
+        repository_block = PushRepositoryBlock(
+            name=repo_name,
+            remote_url=remote_url,
+            provider=detect_provider(remote_url),
+            default_branch=default_branch(store.paths.repo_root),
+        )
+
+        agent_name = meta.get("agent", "unknown")
+        agent_block = PushAgentBlock(
+            name=agent_name,
+            provider=_agent_provider(agent_name),
+            version=__version__,
+        )
+
+        session_block = PushSessionBlock(
+            local_session_id=session_id,
+            task_desc=meta.get("task_desc"),
+            branch=meta.get("branch") or current_branch(store.paths.repo_root),
+            status=meta.get("status", "active"),
+            started_at=meta.get("started_at", 0),
+        )
+
         config = store.read_config()
         base_url = config.get("api_base_url", "http://localhost:8000").rstrip("/")
         endpoint = f"{base_url}/api/v1/sessions/sync/"
@@ -225,12 +269,56 @@ def push_command(args: argparse.Namespace) -> None:
         
         for i in range(0, total_steps, BATCH_SIZE):
             batch = steps_to_push[i:i + BATCH_SIZE]
-            
-            payload = {
-                "session": meta,
-                "steps": batch,
-                "blobs": {} # To be implemented when backend supports blob fetching
-            }
+
+            # Collect all blob hashes referenced in this batch and hydrate them
+            blobs: dict[str, str] = {}
+            formatted_steps = []
+            for step in batch:
+                content_hash = step.get("content_hash")
+                if content_hash:
+                    blob_content = store._read_blob(content_hash)
+                    if blob_content is not None:
+                        blobs[content_hash] = blob_content
+
+                tool = step.get("tool")
+                if tool:
+                    tool_hash = tool.get("content_hash")
+                    if tool_hash:
+                        tool_blob = store._read_blob(tool_hash)
+                        if tool_blob is not None:
+                            blobs[tool_hash] = tool_blob
+
+                formatted_steps.append({
+                    "step_id": step.get("id"),
+                    "step_num": step.get("step_num"),
+                    "type": step.get("type"),
+                    "ts": step.get("ts"),
+                    "content_hash": content_hash,
+                    "tool": {
+                        "name": tool.get("name"),
+                        "category": tool.get("category", "exec"),
+                        "content": tool.get("content"),
+                        "content_hash": tool.get("content_hash"),
+                    } if tool else None,
+                    "file_changes": step.get("file_changes", []),
+                    "risk_flags": step.get("risk_flags", []),
+                    "caused_by": step.get("caused_by", []),
+                    "risk_level": step.get("risk_level", "none"),
+                })
+
+            payload_obj = PushPayload(
+                repository=repository_block,
+                agent=agent_block,
+                session=session_block,
+                blobs=blobs,
+                steps=formatted_steps,
+                client_root=merkle.get("root", ""),
+                metadata=PushMetadataBlock(
+                    os=sys.platform,
+                    client_version=__version__,
+                ),
+            )
+            payload = payload_obj.to_dict()
             
             req = urllib.request.Request(
                 endpoint,
@@ -245,15 +333,27 @@ def push_command(args: argparse.Namespace) -> None:
             try:
                 with urllib.request.urlopen(req) as response:
                     if response.status in (200, 201):
+                        resp_body = response.read().decode('utf-8')
+                        resp_data = json.loads(resp_body) if resp_body else {}
+                        
                         pushed_count += len(batch)
                         percent = int((pushed_count / total_steps) * 100)
                         sys.stdout.write(f"\r  Uploading: {percent:3d}% ({pushed_count}/{total_steps})")
                         sys.stdout.flush()
                         
+                        # Extract state updates from backend response
+                        session_resp = resp_data.get("session", {})
+                        last_step_resp = session_resp.get("last_step", {})
+                        
+                        # Fallback to local batch if server doesn't provide
+                        server_last_step = last_step_resp.get("step_id") or last_step_resp.get("mach_id") or batch[-1]["id"]
+                        
                         # Update local remote state iteratively
-                        meta["remote"]["last_pushed_step_id"] = batch[-1]["id"]
-                        meta["remote"]["last_pushed_ts"] = int(Path('.').stat().st_mtime) 
-                        with open(store.paths.sessions_dir / session_id / "meta.json", "w", encoding="utf-8") as f:
+                        meta["remote"]["last_pushed_step_id"] = server_last_step
+                        meta["remote"]["pushed_root"] = resp_data.get("server_root_after") or resp_data.get("client_root")
+                        meta["remote"]["last_pushed_ts"] = int(time.time())
+                        
+                        with open(session_dir / "meta.json", "w", encoding="utf-8") as f:
                             json.dump(meta, f, indent=2)
                     else:
                         print(f"\nError: Backend returned status {response.status}", file=sys.stderr)
@@ -267,6 +367,18 @@ def push_command(args: argparse.Namespace) -> None:
     except Exception as e:
         print(f"\nError: Failed to push session: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _agent_provider(agent_name: str) -> str:
+    """Map agent name to its provider for the push payload."""
+    mapping = {
+        "gemini": "google",
+        "claude": "anthropic",
+        "codex": "openai",
+        "copilot": "github",
+        "cursor": "anysphere",
+    }
+    return mapping.get(agent_name.lower(), "unknown")
 
 
 

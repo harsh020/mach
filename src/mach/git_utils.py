@@ -37,3 +37,33 @@ def repository_name(repo_root: Path) -> str:
         return base
     return repo_root.name
 
+
+def default_branch(repo_root: Path) -> str:
+    """Best-effort detection of the default branch name."""
+    # Try symbolic-ref of origin/HEAD first
+    ref = _run_git(repo_root, "symbolic-ref", "refs/remotes/origin/HEAD", "--short")
+    if ref:
+        # returns e.g. "origin/main" → strip the remote prefix
+        return ref.split("/", 1)[-1]
+    # Fallback: check if 'main' branch exists, otherwise 'master'
+    branches = _run_git(repo_root, "branch", "--list", "main")
+    if branches:
+        return "main"
+    return "master"
+
+
+def detect_provider(remote_url: str | None) -> str:
+    """Infer the git hosting provider from the remote URL."""
+    if not remote_url:
+        return "unknown"
+    url_lower = remote_url.lower()
+    if "github.com" in url_lower:
+        return "github"
+    if "gitlab.com" in url_lower or "gitlab" in url_lower:
+        return "gitlab"
+    if "bitbucket.org" in url_lower or "bitbucket" in url_lower:
+        return "bitbucket"
+    if "azure.com" in url_lower or "dev.azure" in url_lower:
+        return "azure"
+    return "other"
+

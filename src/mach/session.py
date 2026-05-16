@@ -521,6 +521,7 @@ class SessionStore:
         elif step_type != "system_action":
             if raw_content:
                 self._write_blob(content_hash, raw_content)
+            final_content = raw_content
         else:
             final_content = raw_content
 
@@ -529,16 +530,18 @@ class SessionStore:
             t = dict(step_dict["tool"])
             raw_t_content = t.get("content", "")
             t_content_hash = hash_payload({"content": raw_t_content})
+            final_t_content = None
             
             if "tool" in store_content and raw_t_content:
                 self._write_blob(t_content_hash, raw_t_content)
+                final_t_content = raw_t_content
                 
             from mach.models import ToolCall
             tool_obj = ToolCall(
                 name=t.get("name", ""),
                 category=t.get("category", "exec"),
                 content_hash=t_content_hash,
-                content=None
+                content=final_t_content
             )
 
         from mach.models import Step, FileChange

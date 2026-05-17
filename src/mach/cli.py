@@ -530,6 +530,7 @@ def _format_push_step(store: SessionStore, step: dict, blobs: dict[str, str]) ->
             "name": tool.get("name"),
             "category": tool.get("category", "exec"),
             "content_hash": tool_hash,
+            "content": tool.get("content") or blobs.get(tool_hash) if tool_hash else None,
         }
 
     payload = {
@@ -538,6 +539,8 @@ def _format_push_step(store: SessionStore, step: dict, blobs: dict[str, str]) ->
         "ts": step.get("ts"),
         "type": step.get("type"),
         "content_hash": content_hash,
+        "content": step.get("content") or blobs.get(content_hash) if content_hash else None,
+        "commit_hash": step.get("commit_hash"),
         "caused_by": step.get("caused_by", []),
         "risk_level": step.get("risk_level", "none"),
         "tool": formatted_tool,

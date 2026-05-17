@@ -180,8 +180,14 @@ def push_command(args: argparse.Namespace) -> None:
     if not token:
         print("Error: You must log in first. Run: mach login", file=sys.stderr)
         sys.exit(1)
-        
+
     session_id = args.session_id
+
+    # Handle --reset or --reset-to: clear or rewind the local push tracking
+    if getattr(args, "reset", False) or getattr(args, "reset_to", None):
+        _push_reset(session_id, reset_to=getattr(args, "reset_to", None))
+        return
+
     print(f"Pushing session {session_id} to Mach Web...")
     
     store = SessionStore()
@@ -333,6 +339,170 @@ def push_command(args: argparse.Namespace) -> None:
     except Exception as e:
         print(f"\nError: Failed to push session: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _push_reset(session_id: str, reset_to: str | None = None) -> None:
+    """Reset local push tracking so the session can be re-pushed."""
+    store = SessionStore()
+    meta = store.read_session_meta(session_id)
+    if not meta:
+        print(f"Error: Session {session_id} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    remote = meta.get("remote", {})
+
+    if reset_to:
+        # Validate that the step_id actually exists in the session
+        steps_file = store.paths.sessions_dir / session_id / "steps.jsonl"
+        step_ids = []
+        if steps_file.exists():
+            with open(steps_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    step_ids.append(json.loads(line).get("id"))
+
+        if reset_to not in step_ids:
+            print(f"Error: Step '{reset_to}' not found in session {session_id}.", file=sys.stderr)
+            print(f"  Available steps: {', '.join(step_ids[:5])}{'...' if len(step_ids) > 5 else ''}", file=sys.stderr)
+            sys.exit(1)
+
+        remote["last_pushed_step_id"] = reset_to
+        print(f"Reset push state for {session_id} to step {reset_to}.")
+        print(f"  Steps after '{reset_to}' will be pushed on next `mach push`.")
+    else:
+        # Full reset — clear all push tracking
+        remote["last_pushed_step_id"] = None
+        remote["pushed_root"] = None
+        remote["last_pushed_ts"] = 0
+        remote["last_push_id"] = None
+        remote["server_session_id"] = None
+        remote["server_root_before"] = None
+        remote["server_root_after"] = None
+        remote["blobs_received"] = None
+        remote["steps_received"] = None
+        print(f"Fully reset push state for {session_id}.")
+        print(f"  All steps will be pushed on next `mach push`.")
+
+    meta["remote"] = remote
+    store.update_push_state(
+        session_id,
+        remote_updates=remote,
+    )
+
+
+def pull_command(args: argparse.Namespace) -> None:
+    """Check the backend for current server state and reconcile local tracking."""
+    token = get_token()
+    if not token:
+        print("Error: You must log in first. Run: mach login", file=sys.stderr)
+        sys.exit(1)
+
+    session_id = args.session_id
+    store = SessionStore()
+    meta = store.read_session_meta(session_id)
+    if not meta:
+        print(f"Error: Session {session_id} not found locally.", file=sys.stderr)
+        sys.exit(1)
+
+    config = store.read_config()
+    base_url = config.get("api_base_url", "http://localhost:8000").rstrip("/")
+    endpoint = f"{base_url}/api/v1/sessions/{session_id}/status/"
+
+    req = urllib.request.Request(
+        endpoint,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            resp_body = response.read().decode("utf-8")
+            server_state = json.loads(resp_body) if resp_body else {}
+    except urllib.error.HTTPError as http_err:
+        if http_err.code == 404:
+            # Session doesn't exist on server — reset local tracking
+            print(f"Session {session_id} not found on server. Resetting local push state...")
+            _push_reset(session_id, reset_to=None)
+            return
+        body = http_err.read().decode("utf-8", errors="replace")
+        print(f"Error: Backend returned status {http_err.code}", file=sys.stderr)
+        if body:
+            print(body, file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as req_err:
+        print(f"Error: Could not connect to backend ({endpoint}): {req_err}", file=sys.stderr)
+        sys.exit(1)
+
+    # Read local steps to compare
+    steps_file = store.paths.sessions_dir / session_id / "steps.jsonl"
+    local_step_ids = []
+    if steps_file.exists():
+        with open(steps_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                local_step_ids.append(json.loads(line).get("id"))
+
+    server_step_count = server_state.get("step_count", 0)
+    server_merkle = server_state.get("merkle_root")
+    server_last_step = server_state.get("last_step", {})
+    server_last_step_id = server_last_step.get("step_id") or server_last_step.get("mach_id")
+    local_total = len(local_step_ids)
+
+    print(f"Pull status for session {session_id}:")
+    print(f"  Local steps:  {local_total}")
+    print(f"  Server steps: {server_step_count}")
+
+    if server_merkle:
+        # Read local merkle for comparison
+        merkle_path = store.paths.sessions_dir / session_id / "merkle.sig"
+        local_merkle = {}
+        if merkle_path.exists():
+            with open(merkle_path, "r", encoding="utf-8") as f:
+                local_merkle = json.load(f)
+        local_root = local_merkle.get("root")
+        if local_root == server_merkle:
+            print(f"  Merkle roots match: {server_merkle[:16]}...")
+        else:
+            print(f"  Merkle DIVERGED:")
+            print(f"    Local:  {local_root[:16] if local_root else '(none)'}...")
+            print(f"    Server: {server_merkle[:16]}...")
+
+    # Determine how many steps are unpushed
+    if server_last_step_id and server_last_step_id in local_step_ids:
+        idx = local_step_ids.index(server_last_step_id)
+        unpushed = local_total - idx - 1
+        print(f"  Server has up to step: {server_last_step_id}")
+        print(f"  Unpushed steps: {unpushed}")
+
+        # Update local tracking to match server state
+        store.update_push_state(
+            session_id,
+            remote_updates={
+                "last_pushed_step_id": server_last_step_id,
+                "pushed_root": server_merkle,
+                "last_pushed_ts": int(time.time()),
+                "server_session_id": server_state.get("id"),
+            },
+            step_count=server_step_count,
+        )
+        print(f"  Local push state synchronized with server.")
+        if unpushed > 0:
+            print(f"  Run `mach push {session_id}` to push remaining {unpushed} steps.")
+    elif server_step_count == 0:
+        # Server has no steps — full reset so everything can be pushed
+        print(f"  Server has no steps. Resetting local push state for full re-push...")
+        _push_reset(session_id, reset_to=None)
+        print(f"  Run `mach push {session_id}` to push all {local_total} steps.")
+    else:
+        # Server has steps but we can't correlate — warn the user
+        print(f"  Warning: Could not correlate server state with local steps.")
+        print(f"  Server last step: {server_last_step_id or '(unknown)'}")
+        print(f"  Consider `mach push --reset {session_id}` for a full re-push.")
 
 
 def _format_push_step(store: SessionStore, step: dict, blobs: dict[str, str]) -> dict:
@@ -886,7 +1056,13 @@ def main() -> None:
 
     push_parser = subparsers.add_parser("push", help="Push a session to the Mach web platform.")
     push_parser.add_argument("session_id", help="The ID of the session to push.")
+    push_parser.add_argument("--reset", action="store_true", help="Reset local push tracking so the session can be re-pushed.")
+    push_parser.add_argument("--reset-to", metavar="STEP_ID", help="Reset push state to a specific step ID (re-push steps after it).")
     push_parser.set_defaults(handler=push_command)
+
+    pull_parser = subparsers.add_parser("pull", help="Check server state for a session and reconcile local tracking.")
+    pull_parser.add_argument("session_id", help="The ID of the session to check.")
+    pull_parser.set_defaults(handler=pull_command)
 
     update_parser = subparsers.add_parser("update", help="Update the global Mach installation to the latest version.")
     update_parser.set_defaults(handler=update_command)

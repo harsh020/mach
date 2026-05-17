@@ -384,6 +384,28 @@ class SessionStore:
             self._write_config(current)
             return current
 
+    def update_push_state(
+        self,
+        session_id: str,
+        *,
+        remote_updates: dict[str, Any],
+        step_count: int | None = None,
+        risk_count: int | None = None,
+    ) -> dict[str, Any]:
+        self.init_repo()
+        with file_lock(self.paths.lock_path):
+            meta = self.read_session_meta(session_id)
+            remote = dict(meta.get("remote") or {})
+            remote.update({key: value for key, value in remote_updates.items() if value is not None})
+            meta["remote"] = remote
+            self._write_session_meta(meta)
+            self._upsert_session_index(
+                meta,
+                step_count=step_count if step_count is not None else self._step_count(session_id),
+                risk_count=risk_count if risk_count is not None else self._risk_count(session_id),
+            )
+            return meta
+
     def fsck(self) -> dict[str, Any]:
         self.init_repo()
         with file_lock(self.paths.lock_path):
@@ -621,7 +643,7 @@ class SessionStore:
                     meta["post_commit"],
                     step_count,
                     risk_count,
-                    None,
+                    meta.get("remote", {}).get("last_pushed_ts"),
                     meta.get("agent_session_id"),
                 ),
             )

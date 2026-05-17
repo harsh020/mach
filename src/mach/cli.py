@@ -180,17 +180,21 @@ def push_command(args: argparse.Namespace) -> None:
     if not token:
         print("Error: You must log in first. Run: mach login", file=sys.stderr)
         sys.exit(1)
-        
+
     session_id = args.session_id
+
+    # Handle --reset or --reset-to: clear or rewind the local push tracking
+    if getattr(args, "reset", False) or getattr(args, "reset_to", None):
+        _push_reset(session_id, reset_to=getattr(args, "reset_to", None))
+        return
+
     print(f"Pushing session {session_id} to Mach Web...")
     
     store = SessionStore()
     try:
         from mach import __version__
-        from mach.git_utils import (
-            remote_origin_url, repository_name, default_branch,
-            detect_provider, current_branch,
-        )
+        from mach.git_utils import current_branch, remote_origin_url, repository_name
+        from mach.models import PushMerkle, PushMetadata, PushPayload, PushResponse, PushSessionMeta
 
         meta = store.read_session_meta(session_id)
         remote = meta.get("remote", {})
@@ -204,19 +208,22 @@ def push_command(args: argparse.Namespace) -> None:
         session_dir = store.paths.sessions_dir / session_id
         steps_file = session_dir / "steps.jsonl"
         
-        steps_to_push = []
+        all_steps = []
         if steps_file.exists():
             with open(steps_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
                 
-            found_last = False
             for line in lines:
                 if not line.strip(): continue
                 step_data = json.loads(line)
-                if not last_pushed_id or found_last:
-                    steps_to_push.append(step_data)
-                elif step_data.get("id") == last_pushed_id:
-                    found_last = True
+                all_steps.append(step_data)
+        
+        steps_to_push = all_steps
+        if last_pushed_id:
+            for index, step_data in enumerate(all_steps):
+                if step_data.get("id") == last_pushed_id:
+                    steps_to_push = all_steps[index + 1:]
+                    break
         
         if not steps_to_push:
             print(f"Success: Session {session_id} is already up-to-date.")
@@ -232,94 +239,53 @@ def push_command(args: argparse.Namespace) -> None:
             with open(merkle_path, "r", encoding="utf-8") as f:
                 merkle = json.load(f)
 
-        from mach.models import (
-            PushRepositoryBlock, PushAgentBlock, PushSessionBlock,
-            PushMetadataBlock, PushPayload
-        )
-
-        # Build the static parts of the payload
-        repository_block = PushRepositoryBlock(
-            name=repo_name,
-            remote_url=remote_url,
-            provider=detect_provider(remote_url),
-            default_branch=default_branch(store.paths.repo_root),
-        )
-
-        agent_name = meta.get("agent", "unknown")
-        agent_block = PushAgentBlock(
-            name=agent_name,
-            provider=_agent_provider(agent_name),
-            version=__version__,
-        )
-
-        session_block = PushSessionBlock(
-            local_session_id=session_id,
-            task_desc=meta.get("task_desc"),
-            branch=meta.get("branch") or current_branch(store.paths.repo_root),
-            status=meta.get("status", "active"),
-            started_at=meta.get("started_at", 0),
-        )
+        risk_count = sum(len(step.get("risk_flags", [])) for step in all_steps)
 
         config = store.read_config()
         base_url = config.get("api_base_url", "http://localhost:8000").rstrip("/")
         endpoint = f"{base_url}/api/v1/sessions/sync/"
-        
+
         BATCH_SIZE = 50
         pushed_count = 0
-        
-        for i in range(0, total_steps, BATCH_SIZE):
-            batch = steps_to_push[i:i + BATCH_SIZE]
 
-            # Collect all blob hashes referenced in this batch and hydrate them
+        for batch_start in range(0, total_steps, BATCH_SIZE):
+            batch = steps_to_push[batch_start:batch_start + BATCH_SIZE]
+
             blobs: dict[str, str] = {}
             formatted_steps = []
             for step in batch:
-                content_hash = step.get("content_hash")
-                if content_hash:
-                    blob_content = store._read_blob(content_hash)
-                    if blob_content is not None:
-                        blobs[content_hash] = blob_content
-
-                tool = step.get("tool")
-                if tool:
-                    tool_hash = tool.get("content_hash")
-                    if tool_hash:
-                        tool_blob = store._read_blob(tool_hash)
-                        if tool_blob is not None:
-                            blobs[tool_hash] = tool_blob
-
-                formatted_steps.append({
-                    "step_id": step.get("id"),
-                    "step_num": step.get("step_num"),
-                    "type": step.get("type"),
-                    "ts": step.get("ts"),
-                    "content_hash": content_hash,
-                    "tool": {
-                        "name": tool.get("name"),
-                        "category": tool.get("category", "exec"),
-                        "content": tool.get("content"),
-                        "content_hash": tool.get("content_hash"),
-                    } if tool else None,
-                    "file_changes": step.get("file_changes", []),
-                    "risk_flags": step.get("risk_flags", []),
-                    "caused_by": step.get("caused_by", []),
-                    "risk_level": step.get("risk_level", "none"),
-                })
+                formatted_steps.append(_format_push_step(store, step, blobs))
 
             payload_obj = PushPayload(
-                repository=repository_block,
-                agent=agent_block,
-                session=session_block,
+                repository=remote_url or repo_name,
+                meta=PushSessionMeta(
+                    id=session_id,
+                    agent=meta.get("agent", "unknown"),
+                    agent_session_id=meta.get("agent_session_id"),
+                    task_desc=meta.get("task_desc"),
+                    started_at=meta.get("started_at", 0),
+                    ended_at=meta.get("ended_at"),
+                    status=meta.get("status", "active"),
+                    branch=meta.get("branch") or current_branch(store.paths.repo_root) or "unknown",
+                    pre_commit=meta.get("pre_commit"),
+                    post_commit=meta.get("post_commit"),
+                    step_count=len(all_steps),
+                    risk_count=risk_count,
+                ),
+                merkle=PushMerkle(
+                    root=merkle.get("root"),
+                    steps=int(merkle.get("steps") or len(all_steps)),
+                ),
                 blobs=blobs,
                 steps=formatted_steps,
-                client_root=merkle.get("root", ""),
-                metadata=PushMetadataBlock(
-                    os=sys.platform,
-                    client_version=__version__,
+                client_root=merkle.get("root"),
+                metadata=PushMetadata(
+                    cli_version=__version__,
+                    pushed_from=_push_host_name(),
                 ),
             )
             payload = payload_obj.to_dict()
-            
+
             req = urllib.request.Request(
                 endpoint,
                 data=json.dumps(payload).encode("utf-8"),
@@ -329,44 +295,288 @@ def push_command(args: argparse.Namespace) -> None:
                 },
                 method="POST"
             )
-            
+
             try:
                 with urllib.request.urlopen(req) as response:
-                    if response.status in (200, 201):
-                        resp_body = response.read().decode('utf-8')
-                        resp_data = json.loads(resp_body) if resp_body else {}
-                        
-                        pushed_count += len(batch)
-                        percent = int((pushed_count / total_steps) * 100)
-                        sys.stdout.write(f"\r  Uploading: {percent:3d}% ({pushed_count}/{total_steps})")
-                        sys.stdout.flush()
-                        
-                        # Extract state updates from backend response
-                        session_resp = resp_data.get("session", {})
-                        last_step_resp = session_resp.get("last_step", {})
-                        
-                        # Fallback to local batch if server doesn't provide
-                        server_last_step = last_step_resp.get("step_id") or last_step_resp.get("mach_id") or batch[-1]["id"]
-                        
-                        # Update local remote state iteratively
-                        meta["remote"]["last_pushed_step_id"] = server_last_step
-                        meta["remote"]["pushed_root"] = resp_data.get("server_root_after") or resp_data.get("client_root")
-                        meta["remote"]["last_pushed_ts"] = int(time.time())
-                        
-                        with open(session_dir / "meta.json", "w", encoding="utf-8") as f:
-                            json.dump(meta, f, indent=2)
-                    else:
+                    if response.status not in (200, 201):
                         print(f"\nError: Backend returned status {response.status}", file=sys.stderr)
                         sys.exit(1)
+
+                    resp_body = response.read().decode("utf-8")
+                    push_response = PushResponse.from_dict(json.loads(resp_body) if resp_body else {})
+            except urllib.error.HTTPError as http_err:
+                body = http_err.read().decode("utf-8", errors="replace")
+                print(f"\nError: Backend returned status {http_err.code}", file=sys.stderr)
+                if body:
+                    print(body, file=sys.stderr)
+                sys.exit(1)
             except urllib.error.URLError as req_err:
                 print(f"\nError: Could not connect to backend ({endpoint}): {req_err}", file=sys.stderr)
                 sys.exit(1)
-                
+
+            # Update local tracking after each successful batch (resumable on failure)
+            pushed_count += len(batch)
+            percent = int((pushed_count / total_steps) * 100)
+            sys.stdout.write(f"\r  Uploading: {percent:3d}% ({pushed_count}/{total_steps})")
+            sys.stdout.flush()
+
+            pushed_root = push_response.server_root_after or push_response.session.merkle_root or push_response.client_root
+            pushed_at = push_response.created or push_response.session.synced_at
+            store.update_push_state(
+                session_id,
+                remote_updates={
+                    "url": remote_url,
+                    "repository_name": repo_name,
+                    "last_push_id": push_response.id,
+                    "last_pushed_at": pushed_at,
+                    "last_pushed_ts": int(time.time()),
+                    "last_pushed_step_id": batch[-1].get("id"),
+                    "pushed_root": pushed_root,
+                    "server_session_id": push_response.session.id,
+                    "server_root_before": push_response.server_root_before,
+                    "server_root_after": push_response.server_root_after,
+                    "blobs_received": push_response.blobs_received,
+                    "steps_received": push_response.steps_received,
+                },
+                step_count=push_response.session.step_count,
+                risk_count=push_response.session.risk_count,
+            )
+
         print(f"\nSuccess: Synced session {session_id} to backend.")
+        print(f"  Push ID: {push_response.id or 'unknown'}")
+        print(f"  Steps sent: {pushed_count}; batches: {(total_steps + BATCH_SIZE - 1) // BATCH_SIZE}")
+        if pushed_root:
+            print(f"  Server root: {pushed_root}")
             
     except Exception as e:
         print(f"\nError: Failed to push session: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _push_reset(session_id: str, reset_to: str | None = None) -> None:
+    """Reset local push tracking so the session can be re-pushed."""
+    store = SessionStore()
+    meta = store.read_session_meta(session_id)
+    if not meta:
+        print(f"Error: Session {session_id} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    remote = meta.get("remote", {})
+
+    if reset_to:
+        # Validate that the step_id actually exists in the session
+        steps_file = store.paths.sessions_dir / session_id / "steps.jsonl"
+        step_ids = []
+        if steps_file.exists():
+            with open(steps_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    step_ids.append(json.loads(line).get("id"))
+
+        if reset_to not in step_ids:
+            print(f"Error: Step '{reset_to}' not found in session {session_id}.", file=sys.stderr)
+            print(f"  Available steps: {', '.join(step_ids[:5])}{'...' if len(step_ids) > 5 else ''}", file=sys.stderr)
+            sys.exit(1)
+
+        remote["last_pushed_step_id"] = reset_to
+        print(f"Reset push state for {session_id} to step {reset_to}.")
+        print(f"  Steps after '{reset_to}' will be pushed on next `mach push`.")
+    else:
+        # Full reset — clear all push tracking
+        remote["last_pushed_step_id"] = None
+        remote["pushed_root"] = None
+        remote["last_pushed_ts"] = 0
+        remote["last_push_id"] = None
+        remote["server_session_id"] = None
+        remote["server_root_before"] = None
+        remote["server_root_after"] = None
+        remote["blobs_received"] = None
+        remote["steps_received"] = None
+        print(f"Fully reset push state for {session_id}.")
+        print(f"  All steps will be pushed on next `mach push`.")
+
+    meta["remote"] = remote
+    store.update_push_state(
+        session_id,
+        remote_updates=remote,
+    )
+
+
+def pull_command(args: argparse.Namespace) -> None:
+    """Check the backend for current server state and reconcile local tracking."""
+    token = get_token()
+    if not token:
+        print("Error: You must log in first. Run: mach login", file=sys.stderr)
+        sys.exit(1)
+
+    session_id = args.session_id
+    store = SessionStore()
+    meta = store.read_session_meta(session_id)
+    if not meta:
+        print(f"Error: Session {session_id} not found locally.", file=sys.stderr)
+        sys.exit(1)
+
+    config = store.read_config()
+    base_url = config.get("api_base_url", "http://localhost:8000").rstrip("/")
+    endpoint = f"{base_url}/api/v1/sessions/{session_id}/status/"
+
+    req = urllib.request.Request(
+        endpoint,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            resp_body = response.read().decode("utf-8")
+            server_state = json.loads(resp_body) if resp_body else {}
+    except urllib.error.HTTPError as http_err:
+        if http_err.code == 404:
+            # Session doesn't exist on server — reset local tracking
+            print(f"Session {session_id} not found on server. Resetting local push state...")
+            _push_reset(session_id, reset_to=None)
+            return
+        body = http_err.read().decode("utf-8", errors="replace")
+        print(f"Error: Backend returned status {http_err.code}", file=sys.stderr)
+        if body:
+            print(body, file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as req_err:
+        print(f"Error: Could not connect to backend ({endpoint}): {req_err}", file=sys.stderr)
+        sys.exit(1)
+
+    # Read local steps to compare
+    steps_file = store.paths.sessions_dir / session_id / "steps.jsonl"
+    local_step_ids = []
+    if steps_file.exists():
+        with open(steps_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                local_step_ids.append(json.loads(line).get("id"))
+
+    server_step_count = server_state.get("step_count", 0)
+    server_merkle = server_state.get("merkle_root")
+    server_last_step = server_state.get("last_step", {})
+    server_last_step_id = server_last_step.get("step_id") or server_last_step.get("mach_id")
+    local_total = len(local_step_ids)
+
+    print(f"Pull status for session {session_id}:")
+    print(f"  Local steps:  {local_total}")
+    print(f"  Server steps: {server_step_count}")
+
+    if server_merkle:
+        # Read local merkle for comparison
+        merkle_path = store.paths.sessions_dir / session_id / "merkle.sig"
+        local_merkle = {}
+        if merkle_path.exists():
+            with open(merkle_path, "r", encoding="utf-8") as f:
+                local_merkle = json.load(f)
+        local_root = local_merkle.get("root")
+        if local_root == server_merkle:
+            print(f"  Merkle roots match: {server_merkle[:16]}...")
+        else:
+            print(f"  Merkle DIVERGED:")
+            print(f"    Local:  {local_root[:16] if local_root else '(none)'}...")
+            print(f"    Server: {server_merkle[:16]}...")
+
+    # Determine how many steps are unpushed
+    if server_last_step_id and server_last_step_id in local_step_ids:
+        idx = local_step_ids.index(server_last_step_id)
+        unpushed = local_total - idx - 1
+        print(f"  Server has up to step: {server_last_step_id}")
+        print(f"  Unpushed steps: {unpushed}")
+
+        # Update local tracking to match server state
+        store.update_push_state(
+            session_id,
+            remote_updates={
+                "last_pushed_step_id": server_last_step_id,
+                "pushed_root": server_merkle,
+                "last_pushed_ts": int(time.time()),
+                "server_session_id": server_state.get("id"),
+            },
+            step_count=server_step_count,
+        )
+        print(f"  Local push state synchronized with server.")
+        if unpushed > 0:
+            print(f"  Run `mach push {session_id}` to push remaining {unpushed} steps.")
+    elif server_step_count == 0:
+        # Server has no steps — full reset so everything can be pushed
+        print(f"  Server has no steps. Resetting local push state for full re-push...")
+        _push_reset(session_id, reset_to=None)
+        print(f"  Run `mach push {session_id}` to push all {local_total} steps.")
+    else:
+        # Server has steps but we can't correlate — warn the user
+        print(f"  Warning: Could not correlate server state with local steps.")
+        print(f"  Server last step: {server_last_step_id or '(unknown)'}")
+        print(f"  Consider `mach push --reset {session_id}` for a full re-push.")
+
+
+def _format_push_step(store: SessionStore, step: dict, blobs: dict[str, str]) -> dict:
+    content_hash = step.get("content_hash")
+    _collect_blob(store, blobs, content_hash, step.get("content"))
+
+    tool = step.get("tool")
+    formatted_tool = None
+    if tool:
+        tool_hash = tool.get("content_hash")
+        _collect_blob(store, blobs, tool_hash, tool.get("content"))
+        formatted_tool = {
+            "name": tool.get("name"),
+            "category": tool.get("category", "exec"),
+            "content_hash": tool_hash,
+            "content": tool.get("content") or blobs.get(tool_hash) if tool_hash else None,
+        }
+
+    payload = {
+        "id": step.get("id"),
+        "step_num": step.get("step_num"),
+        "ts": step.get("ts"),
+        "type": step.get("type"),
+        "content_hash": content_hash,
+        "content": step.get("content") or blobs.get(content_hash) if content_hash else None,
+        "commit_hash": step.get("commit_hash"),
+        "caused_by": step.get("caused_by", []),
+        "risk_level": step.get("risk_level", "none"),
+        "tool": formatted_tool,
+        "file_changes": [_format_push_file_change(store, change) for change in step.get("file_changes", [])],
+        "risk_flags": step.get("risk_flags", []),
+    }
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _format_push_file_change(store: SessionStore, change: dict) -> dict:
+    formatted = dict(change)
+    file_path = formatted.get("file_path")
+    if file_path:
+        path = Path(file_path)
+        if path.is_absolute():
+            try:
+                formatted["file_path"] = str(path.relative_to(store.paths.repo_root))
+            except ValueError:
+                formatted["file_path"] = str(path)
+    return formatted
+
+
+def _collect_blob(store: SessionStore, blobs: dict[str, str], content_hash: str | None, inline_content: str | None = None) -> None:
+    if not content_hash:
+        return
+    content = inline_content if inline_content is not None else store._read_blob(content_hash)
+    if content is not None:
+        blobs[content_hash] = content
+
+
+def _push_host_name() -> str:
+    try:
+        import socket
+        return socket.gethostname()
+    except Exception:
+        return sys.platform
 
 
 def _agent_provider(agent_name: str) -> str:
@@ -861,7 +1071,13 @@ def main() -> None:
 
     push_parser = subparsers.add_parser("push", help="Push a session to the Mach web platform.")
     push_parser.add_argument("session_id", help="The ID of the session to push.")
+    push_parser.add_argument("--reset", action="store_true", help="Reset local push tracking so the session can be re-pushed.")
+    push_parser.add_argument("--reset-to", metavar="STEP_ID", help="Reset push state to a specific step ID (re-push steps after it).")
     push_parser.set_defaults(handler=push_command)
+
+    pull_parser = subparsers.add_parser("pull", help="Check server state for a session and reconcile local tracking.")
+    pull_parser.add_argument("session_id", help="The ID of the session to check.")
+    pull_parser.set_defaults(handler=pull_command)
 
     update_parser = subparsers.add_parser("update", help="Update the global Mach installation to the latest version.")
     update_parser.set_defaults(handler=update_command)

@@ -187,10 +187,8 @@ def push_command(args: argparse.Namespace) -> None:
     store = SessionStore()
     try:
         from mach import __version__
-        from mach.git_utils import (
-            remote_origin_url, repository_name, default_branch,
-            detect_provider, current_branch,
-        )
+        from mach.git_utils import current_branch, remote_origin_url, repository_name
+        from mach.models import PushMerkle, PushMetadata, PushPayload, PushResponse, PushSessionMeta
 
         meta = store.read_session_meta(session_id)
         remote = meta.get("remote", {})
@@ -204,19 +202,22 @@ def push_command(args: argparse.Namespace) -> None:
         session_dir = store.paths.sessions_dir / session_id
         steps_file = session_dir / "steps.jsonl"
         
-        steps_to_push = []
+        all_steps = []
         if steps_file.exists():
             with open(steps_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
                 
-            found_last = False
             for line in lines:
                 if not line.strip(): continue
                 step_data = json.loads(line)
-                if not last_pushed_id or found_last:
-                    steps_to_push.append(step_data)
-                elif step_data.get("id") == last_pushed_id:
-                    found_last = True
+                all_steps.append(step_data)
+        
+        steps_to_push = all_steps
+        if last_pushed_id:
+            for index, step_data in enumerate(all_steps):
+                if step_data.get("id") == last_pushed_id:
+                    steps_to_push = all_steps[index + 1:]
+                    break
         
         if not steps_to_push:
             print(f"Success: Session {session_id} is already up-to-date.")
@@ -232,141 +233,165 @@ def push_command(args: argparse.Namespace) -> None:
             with open(merkle_path, "r", encoding="utf-8") as f:
                 merkle = json.load(f)
 
-        from mach.models import (
-            PushRepositoryBlock, PushAgentBlock, PushSessionBlock,
-            PushMetadataBlock, PushPayload
-        )
+        blobs: dict[str, str] = {}
+        formatted_steps = []
+        for step in steps_to_push:
+            formatted_steps.append(_format_push_step(store, step, blobs))
 
-        # Build the static parts of the payload
-        repository_block = PushRepositoryBlock(
-            name=repo_name,
-            remote_url=remote_url,
-            provider=detect_provider(remote_url),
-            default_branch=default_branch(store.paths.repo_root),
+        risk_count = sum(len(step.get("risk_flags", [])) for step in all_steps)
+        payload_obj = PushPayload(
+            repository=remote_url or repo_name,
+            meta=PushSessionMeta(
+                id=session_id,
+                agent=meta.get("agent", "unknown"),
+                agent_session_id=meta.get("agent_session_id"),
+                task_desc=meta.get("task_desc"),
+                started_at=meta.get("started_at", 0),
+                ended_at=meta.get("ended_at"),
+                status=meta.get("status", "active"),
+                branch=meta.get("branch") or current_branch(store.paths.repo_root) or "unknown",
+                pre_commit=meta.get("pre_commit"),
+                post_commit=meta.get("post_commit"),
+                step_count=len(all_steps),
+                risk_count=risk_count,
+            ),
+            merkle=PushMerkle(
+                root=merkle.get("root"),
+                steps=int(merkle.get("steps") or len(all_steps)),
+            ),
+            blobs=blobs,
+            steps=formatted_steps,
+            client_root=merkle.get("root"),
+            metadata=PushMetadata(
+                cli_version=__version__,
+                pushed_from=_push_host_name(),
+            ),
         )
-
-        agent_name = meta.get("agent", "unknown")
-        agent_block = PushAgentBlock(
-            name=agent_name,
-            provider=_agent_provider(agent_name),
-            version=__version__,
-        )
-
-        session_block = PushSessionBlock(
-            local_session_id=session_id,
-            task_desc=meta.get("task_desc"),
-            branch=meta.get("branch") or current_branch(store.paths.repo_root),
-            status=meta.get("status", "active"),
-            started_at=meta.get("started_at", 0),
-        )
+        payload = payload_obj.to_dict()
 
         config = store.read_config()
         base_url = config.get("api_base_url", "http://localhost:8000").rstrip("/")
         endpoint = f"{base_url}/api/v1/sessions/sync/"
-        
-        BATCH_SIZE = 50
-        pushed_count = 0
-        
-        for i in range(0, total_steps, BATCH_SIZE):
-            batch = steps_to_push[i:i + BATCH_SIZE]
 
-            # Collect all blob hashes referenced in this batch and hydrate them
-            blobs: dict[str, str] = {}
-            formatted_steps = []
-            for step in batch:
-                content_hash = step.get("content_hash")
-                if content_hash:
-                    blob_content = store._read_blob(content_hash)
-                    if blob_content is not None:
-                        blobs[content_hash] = blob_content
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            },
+            method="POST"
+        )
 
-                tool = step.get("tool")
-                if tool:
-                    tool_hash = tool.get("content_hash")
-                    if tool_hash:
-                        tool_blob = store._read_blob(tool_hash)
-                        if tool_blob is not None:
-                            blobs[tool_hash] = tool_blob
+        try:
+            with urllib.request.urlopen(req) as response:
+                if response.status not in (200, 201):
+                    print(f"\nError: Backend returned status {response.status}", file=sys.stderr)
+                    sys.exit(1)
 
-                formatted_steps.append({
-                    "step_id": step.get("id"),
-                    "step_num": step.get("step_num"),
-                    "type": step.get("type"),
-                    "ts": step.get("ts"),
-                    "content_hash": content_hash,
-                    "tool": {
-                        "name": tool.get("name"),
-                        "category": tool.get("category", "exec"),
-                        "content": tool.get("content"),
-                        "content_hash": tool.get("content_hash"),
-                    } if tool else None,
-                    "file_changes": step.get("file_changes", []),
-                    "risk_flags": step.get("risk_flags", []),
-                    "caused_by": step.get("caused_by", []),
-                    "risk_level": step.get("risk_level", "none"),
-                })
+                resp_body = response.read().decode("utf-8")
+                push_response = PushResponse.from_dict(json.loads(resp_body) if resp_body else {})
+        except urllib.error.HTTPError as http_err:
+            body = http_err.read().decode("utf-8", errors="replace")
+            print(f"\nError: Backend returned status {http_err.code}", file=sys.stderr)
+            if body:
+                print(body, file=sys.stderr)
+            sys.exit(1)
+        except urllib.error.URLError as req_err:
+            print(f"\nError: Could not connect to backend ({endpoint}): {req_err}", file=sys.stderr)
+            sys.exit(1)
 
-            payload_obj = PushPayload(
-                repository=repository_block,
-                agent=agent_block,
-                session=session_block,
-                blobs=blobs,
-                steps=formatted_steps,
-                client_root=merkle.get("root", ""),
-                metadata=PushMetadataBlock(
-                    os=sys.platform,
-                    client_version=__version__,
-                ),
-            )
-            payload = payload_obj.to_dict()
-            
-            req = urllib.request.Request(
-                endpoint,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {token}"
-                },
-                method="POST"
-            )
-            
-            try:
-                with urllib.request.urlopen(req) as response:
-                    if response.status in (200, 201):
-                        resp_body = response.read().decode('utf-8')
-                        resp_data = json.loads(resp_body) if resp_body else {}
-                        
-                        pushed_count += len(batch)
-                        percent = int((pushed_count / total_steps) * 100)
-                        sys.stdout.write(f"\r  Uploading: {percent:3d}% ({pushed_count}/{total_steps})")
-                        sys.stdout.flush()
-                        
-                        # Extract state updates from backend response
-                        session_resp = resp_data.get("session", {})
-                        last_step_resp = session_resp.get("last_step", {})
-                        
-                        # Fallback to local batch if server doesn't provide
-                        server_last_step = last_step_resp.get("step_id") or last_step_resp.get("mach_id") or batch[-1]["id"]
-                        
-                        # Update local remote state iteratively
-                        meta["remote"]["last_pushed_step_id"] = server_last_step
-                        meta["remote"]["pushed_root"] = resp_data.get("server_root_after") or resp_data.get("client_root")
-                        meta["remote"]["last_pushed_ts"] = int(time.time())
-                        
-                        with open(session_dir / "meta.json", "w", encoding="utf-8") as f:
-                            json.dump(meta, f, indent=2)
-                    else:
-                        print(f"\nError: Backend returned status {response.status}", file=sys.stderr)
-                        sys.exit(1)
-            except urllib.error.URLError as req_err:
-                print(f"\nError: Could not connect to backend ({endpoint}): {req_err}", file=sys.stderr)
-                sys.exit(1)
-                
+        pushed_root = push_response.server_root_after or push_response.session.merkle_root or push_response.client_root
+        pushed_at = push_response.created or push_response.session.synced_at
+        last_pushed_ts = int(time.time())
+        store.update_push_state(
+            session_id,
+            remote_updates={
+                "url": remote_url,
+                "repository_name": repo_name,
+                "last_push_id": push_response.id,
+                "last_pushed_at": pushed_at,
+                "last_pushed_ts": last_pushed_ts,
+                "last_pushed_step_id": steps_to_push[-1].get("id"),
+                "pushed_root": pushed_root,
+                "server_session_id": push_response.session.id,
+                "server_root_before": push_response.server_root_before,
+                "server_root_after": push_response.server_root_after,
+                "blobs_received": push_response.blobs_received,
+                "steps_received": push_response.steps_received,
+            },
+            step_count=push_response.session.step_count,
+            risk_count=push_response.session.risk_count,
+        )
+
         print(f"\nSuccess: Synced session {session_id} to backend.")
+        print(f"  Push ID: {push_response.id or 'unknown'}")
+        print(f"  Steps sent: {len(steps_to_push)}; blobs sent: {len(blobs)}")
+        if pushed_root:
+            print(f"  Server root: {pushed_root}")
             
     except Exception as e:
         print(f"\nError: Failed to push session: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _format_push_step(store: SessionStore, step: dict, blobs: dict[str, str]) -> dict:
+    content_hash = step.get("content_hash")
+    _collect_blob(store, blobs, content_hash, step.get("content"))
+
+    tool = step.get("tool")
+    formatted_tool = None
+    if tool:
+        tool_hash = tool.get("content_hash")
+        _collect_blob(store, blobs, tool_hash, tool.get("content"))
+        formatted_tool = {
+            "name": tool.get("name"),
+            "category": tool.get("category", "exec"),
+            "content_hash": tool_hash,
+        }
+
+    payload = {
+        "id": step.get("id"),
+        "step_num": step.get("step_num"),
+        "ts": step.get("ts"),
+        "type": step.get("type"),
+        "content_hash": content_hash,
+        "caused_by": step.get("caused_by", []),
+        "risk_level": step.get("risk_level", "none"),
+        "tool": formatted_tool,
+        "file_changes": [_format_push_file_change(store, change) for change in step.get("file_changes", [])],
+        "risk_flags": step.get("risk_flags", []),
+    }
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _format_push_file_change(store: SessionStore, change: dict) -> dict:
+    formatted = dict(change)
+    file_path = formatted.get("file_path")
+    if file_path:
+        path = Path(file_path)
+        if path.is_absolute():
+            try:
+                formatted["file_path"] = str(path.relative_to(store.paths.repo_root))
+            except ValueError:
+                formatted["file_path"] = str(path)
+    return formatted
+
+
+def _collect_blob(store: SessionStore, blobs: dict[str, str], content_hash: str | None, inline_content: str | None = None) -> None:
+    if not content_hash:
+        return
+    content = inline_content if inline_content is not None else store._read_blob(content_hash)
+    if content is not None:
+        blobs[content_hash] = content
+
+
+def _push_host_name() -> str:
+    try:
+        import socket
+        return socket.gethostname()
+    except Exception:
+        return sys.platform
 
 
 def _agent_provider(agent_name: str) -> str:

@@ -170,41 +170,90 @@ class SessionMeta:
         )
 
 @dataclass
-class PushRepositoryBlock:
-    name: str
-    remote_url: str
-    provider: str
-    default_branch: str
-
-@dataclass
-class PushAgentBlock:
-    name: str
-    provider: str
-    version: str
-
-@dataclass
-class PushSessionBlock:
-    local_session_id: str
+class PushSessionMeta:
+    id: str
+    agent: str
+    agent_session_id: Optional[str]
     task_desc: Optional[str]
-    branch: str
-    status: str
     started_at: int
+    ended_at: Optional[int]
+    status: str
+    branch: str
+    pre_commit: Optional[str]
+    post_commit: Optional[str]
+    step_count: int
+    risk_count: int
+
 
 @dataclass
-class PushMetadataBlock:
-    os: str
-    client_version: str
+class PushMerkle:
+    root: Optional[str]
+    steps: int
+
+
+@dataclass
+class PushMetadata:
+    cli_version: str
+    pushed_from: str
+
 
 @dataclass
 class PushPayload:
-    repository: PushRepositoryBlock
-    agent: PushAgentBlock
-    session: PushSessionBlock
+    repository: Optional[str]
+    meta: PushSessionMeta
+    merkle: PushMerkle
     blobs: dict[str, str]
     steps: list[dict[str, Any]]
-    client_root: str
-    metadata: PushMetadataBlock
+    client_root: Optional[str]
+    metadata: PushMetadata
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+
+@dataclass
+class PushSessionResponse:
+    id: Optional[str]
+    local_session_id: Optional[str]
+    synced_at: Optional[str]
+    merkle_root: Optional[str]
+    merkle_steps: Optional[int]
+    step_count: Optional[int]
+    risk_count: Optional[int]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PushSessionResponse":
+        return cls(
+            id=data.get("id"),
+            local_session_id=data.get("local_session_id"),
+            synced_at=data.get("synced_at"),
+            merkle_root=data.get("merkle_root"),
+            merkle_steps=data.get("merkle_steps"),
+            step_count=data.get("step_count"),
+            risk_count=data.get("risk_count"),
+        )
+
+
+@dataclass
+class PushResponse:
+    id: Optional[str]
+    session: PushSessionResponse
+    client_root: Optional[str]
+    server_root_before: Optional[str]
+    server_root_after: Optional[str]
+    blobs_received: int
+    steps_received: int
+    created: Optional[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PushResponse":
+        return cls(
+            id=data.get("id"),
+            session=PushSessionResponse.from_dict(data.get("session", {})),
+            client_root=data.get("client_root"),
+            server_root_before=data.get("server_root_before"),
+            server_root_after=data.get("server_root_after"),
+            blobs_received=int(data.get("blobs_received") or 0),
+            steps_received=int(data.get("steps_received") or 0),
+            created=data.get("created"),
+        )

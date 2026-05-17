@@ -239,100 +239,112 @@ def push_command(args: argparse.Namespace) -> None:
             with open(merkle_path, "r", encoding="utf-8") as f:
                 merkle = json.load(f)
 
-        blobs: dict[str, str] = {}
-        formatted_steps = []
-        for step in steps_to_push:
-            formatted_steps.append(_format_push_step(store, step, blobs))
-
         risk_count = sum(len(step.get("risk_flags", [])) for step in all_steps)
-        payload_obj = PushPayload(
-            repository=remote_url or repo_name,
-            meta=PushSessionMeta(
-                id=session_id,
-                agent=meta.get("agent", "unknown"),
-                agent_session_id=meta.get("agent_session_id"),
-                task_desc=meta.get("task_desc"),
-                started_at=meta.get("started_at", 0),
-                ended_at=meta.get("ended_at"),
-                status=meta.get("status", "active"),
-                branch=meta.get("branch") or current_branch(store.paths.repo_root) or "unknown",
-                pre_commit=meta.get("pre_commit"),
-                post_commit=meta.get("post_commit"),
-                step_count=len(all_steps),
-                risk_count=risk_count,
-            ),
-            merkle=PushMerkle(
-                root=merkle.get("root"),
-                steps=int(merkle.get("steps") or len(all_steps)),
-            ),
-            blobs=blobs,
-            steps=formatted_steps,
-            client_root=merkle.get("root"),
-            metadata=PushMetadata(
-                cli_version=__version__,
-                pushed_from=_push_host_name(),
-            ),
-        )
-        payload = payload_obj.to_dict()
 
         config = store.read_config()
         base_url = config.get("api_base_url", "http://localhost:8000").rstrip("/")
         endpoint = f"{base_url}/api/v1/sessions/sync/"
 
-        req = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}"
-            },
-            method="POST"
-        )
+        BATCH_SIZE = 50
+        pushed_count = 0
 
-        try:
-            with urllib.request.urlopen(req) as response:
-                if response.status not in (200, 201):
-                    print(f"\nError: Backend returned status {response.status}", file=sys.stderr)
-                    sys.exit(1)
+        for batch_start in range(0, total_steps, BATCH_SIZE):
+            batch = steps_to_push[batch_start:batch_start + BATCH_SIZE]
 
-                resp_body = response.read().decode("utf-8")
-                push_response = PushResponse.from_dict(json.loads(resp_body) if resp_body else {})
-        except urllib.error.HTTPError as http_err:
-            body = http_err.read().decode("utf-8", errors="replace")
-            print(f"\nError: Backend returned status {http_err.code}", file=sys.stderr)
-            if body:
-                print(body, file=sys.stderr)
-            sys.exit(1)
-        except urllib.error.URLError as req_err:
-            print(f"\nError: Could not connect to backend ({endpoint}): {req_err}", file=sys.stderr)
-            sys.exit(1)
+            blobs: dict[str, str] = {}
+            formatted_steps = []
+            for step in batch:
+                formatted_steps.append(_format_push_step(store, step, blobs))
 
-        pushed_root = push_response.server_root_after or push_response.session.merkle_root or push_response.client_root
-        pushed_at = push_response.created or push_response.session.synced_at
-        last_pushed_ts = int(time.time())
-        store.update_push_state(
-            session_id,
-            remote_updates={
-                "url": remote_url,
-                "repository_name": repo_name,
-                "last_push_id": push_response.id,
-                "last_pushed_at": pushed_at,
-                "last_pushed_ts": last_pushed_ts,
-                "last_pushed_step_id": steps_to_push[-1].get("id"),
-                "pushed_root": pushed_root,
-                "server_session_id": push_response.session.id,
-                "server_root_before": push_response.server_root_before,
-                "server_root_after": push_response.server_root_after,
-                "blobs_received": push_response.blobs_received,
-                "steps_received": push_response.steps_received,
-            },
-            step_count=push_response.session.step_count,
-            risk_count=push_response.session.risk_count,
-        )
+            payload_obj = PushPayload(
+                repository=remote_url or repo_name,
+                meta=PushSessionMeta(
+                    id=session_id,
+                    agent=meta.get("agent", "unknown"),
+                    agent_session_id=meta.get("agent_session_id"),
+                    task_desc=meta.get("task_desc"),
+                    started_at=meta.get("started_at", 0),
+                    ended_at=meta.get("ended_at"),
+                    status=meta.get("status", "active"),
+                    branch=meta.get("branch") or current_branch(store.paths.repo_root) or "unknown",
+                    pre_commit=meta.get("pre_commit"),
+                    post_commit=meta.get("post_commit"),
+                    step_count=len(all_steps),
+                    risk_count=risk_count,
+                ),
+                merkle=PushMerkle(
+                    root=merkle.get("root"),
+                    steps=int(merkle.get("steps") or len(all_steps)),
+                ),
+                blobs=blobs,
+                steps=formatted_steps,
+                client_root=merkle.get("root"),
+                metadata=PushMetadata(
+                    cli_version=__version__,
+                    pushed_from=_push_host_name(),
+                ),
+            )
+            payload = payload_obj.to_dict()
+
+            req = urllib.request.Request(
+                endpoint,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}"
+                },
+                method="POST"
+            )
+
+            try:
+                with urllib.request.urlopen(req) as response:
+                    if response.status not in (200, 201):
+                        print(f"\nError: Backend returned status {response.status}", file=sys.stderr)
+                        sys.exit(1)
+
+                    resp_body = response.read().decode("utf-8")
+                    push_response = PushResponse.from_dict(json.loads(resp_body) if resp_body else {})
+            except urllib.error.HTTPError as http_err:
+                body = http_err.read().decode("utf-8", errors="replace")
+                print(f"\nError: Backend returned status {http_err.code}", file=sys.stderr)
+                if body:
+                    print(body, file=sys.stderr)
+                sys.exit(1)
+            except urllib.error.URLError as req_err:
+                print(f"\nError: Could not connect to backend ({endpoint}): {req_err}", file=sys.stderr)
+                sys.exit(1)
+
+            # Update local tracking after each successful batch (resumable on failure)
+            pushed_count += len(batch)
+            percent = int((pushed_count / total_steps) * 100)
+            sys.stdout.write(f"\r  Uploading: {percent:3d}% ({pushed_count}/{total_steps})")
+            sys.stdout.flush()
+
+            pushed_root = push_response.server_root_after or push_response.session.merkle_root or push_response.client_root
+            pushed_at = push_response.created or push_response.session.synced_at
+            store.update_push_state(
+                session_id,
+                remote_updates={
+                    "url": remote_url,
+                    "repository_name": repo_name,
+                    "last_push_id": push_response.id,
+                    "last_pushed_at": pushed_at,
+                    "last_pushed_ts": int(time.time()),
+                    "last_pushed_step_id": batch[-1].get("id"),
+                    "pushed_root": pushed_root,
+                    "server_session_id": push_response.session.id,
+                    "server_root_before": push_response.server_root_before,
+                    "server_root_after": push_response.server_root_after,
+                    "blobs_received": push_response.blobs_received,
+                    "steps_received": push_response.steps_received,
+                },
+                step_count=push_response.session.step_count,
+                risk_count=push_response.session.risk_count,
+            )
 
         print(f"\nSuccess: Synced session {session_id} to backend.")
         print(f"  Push ID: {push_response.id or 'unknown'}")
-        print(f"  Steps sent: {len(steps_to_push)}; blobs sent: {len(blobs)}")
+        print(f"  Steps sent: {pushed_count}; batches: {(total_steps + BATCH_SIZE - 1) // BATCH_SIZE}")
         if pushed_root:
             print(f"  Server root: {pushed_root}")
             

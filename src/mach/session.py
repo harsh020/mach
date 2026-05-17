@@ -396,7 +396,7 @@ class SessionStore:
         with file_lock(self.paths.lock_path):
             meta = self.read_session_meta(session_id)
             remote = dict(meta.get("remote") or {})
-            remote.update({key: value for key, value in remote_updates.items() if value is not None})
+            remote.update(remote_updates)
             meta["remote"] = remote
             self._write_session_meta(meta)
             self._upsert_session_index(

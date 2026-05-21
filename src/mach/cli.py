@@ -536,7 +536,7 @@ def _format_push_step(store: SessionStore, step: dict, blobs: dict[str, str]) ->
     payload = {
         "id": step.get("id"),
         "step_num": step.get("step_num"),
-        "ts": step.get("ts"),
+        "timestamp": step.get("ts"),
         "type": step.get("type"),
         "content_hash": content_hash,
         "content": step.get("content") or blobs.get(content_hash) if content_hash else None,

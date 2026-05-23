@@ -200,7 +200,8 @@ def push_command(args: argparse.Namespace) -> None:
         remote = meta.get("remote", {})
         git_info = remote.get("git") or {}
         mach_state = remote.get("mach") or {}
-        remote_url = git_info.get("url") or remote_origin_url(store.paths.repo_root)
+        # remote_url = git_info.get("url") or remote_origin_url(store.paths.repo_root)
+        remote_url = git_info.get("url")
         repo_name = git_info.get("repository_name") or repository_name(store.paths.repo_root)
         print(f"  Repository: {repo_name}")
         print("  Calculating Merkle deltas...")
@@ -399,7 +400,12 @@ def _push_reset(session_id: str, reset_to: str | None = None) -> None:
 
 
 def pull_command(args: argparse.Namespace) -> None:
-    """Check the backend for current server state and reconcile local tracking."""
+    """Reconcile local push-tracking with the server by paginating through the
+    server's step listing.  Does NOT modify local session steps — only updates
+    the local Mach sync cursor so the next `mach push` sends the right delta.
+    """
+    PULL_PAGE_SIZE = 50  # steps per request — keeps server load reasonable
+
     token = get_token()
     if not token:
         print("Error: You must log in first. Run: mach login", file=sys.stderr)
@@ -407,109 +413,161 @@ def pull_command(args: argparse.Namespace) -> None:
 
     session_id = args.session_id
     store = SessionStore()
-    meta = store.read_session_meta(session_id)
+
+    # ── 1. Verify the session exists locally ────────────────────────────────
+    try:
+        meta = store.read_session_meta(session_id)
+    except Exception:
+        meta = None
     if not meta:
-        print(f"Error: Session {session_id} not found locally.", file=sys.stderr)
+        print(f"Error: Session '{session_id}' not found locally.", file=sys.stderr)
         sys.exit(1)
 
     config = store.read_config()
     base_url = config.get("api_base_url", "http://localhost:8000").rstrip("/")
-    endpoint = f"{base_url}/api/v1/sessions/{session_id}/"
+    steps_base = f"{base_url}/api/v1/sessions/{session_id}/steps"
 
-    req = urllib.request.Request(
-        endpoint,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-        },
-        method="GET",
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            resp_body = response.read().decode("utf-8")
-            server_state = json.loads(resp_body) if resp_body else {}
-    except urllib.error.HTTPError as http_err:
-        if http_err.code == 404:
-            # Session doesn't exist on server — reset local tracking
-            print(f"Session {session_id} not found on server. Resetting local push state...")
-            _push_reset(session_id, reset_to=None)
-            return
-        body = http_err.read().decode("utf-8", errors="replace")
-        print(f"Error: Backend returned status {http_err.code}", file=sys.stderr)
-        if body:
-            print(body, file=sys.stderr)
-        sys.exit(1)
-    except urllib.error.URLError as req_err:
-        print(f"Error: Could not connect to backend ({endpoint}): {req_err}", file=sys.stderr)
-        sys.exit(1)
-
-    # Read local steps to compare
+    # ── 2. Load local step index ─────────────────────────────────────────────
     steps_file = store.paths.sessions_dir / session_id / "steps.jsonl"
-    local_step_ids = []
+    local_steps: list[dict] = []
     if steps_file.exists():
-        with open(steps_file, "r", encoding="utf-8") as f:
-            for line in f:
+        with open(steps_file, "r", encoding="utf-8") as fh:
+            for line in fh:
                 if not line.strip():
                     continue
-                local_step_ids.append(json.loads(line).get("id"))
+                s = json.loads(line)
+                local_steps.append({"id": s.get("id"), "step_num": s.get("step_num")})
 
-    server_step_count = server_state.get("step_count", 0)
-    server_merkle = server_state.get("merkle_root")
-    server_last_step = server_state.get("last_step", {})
-    server_last_step_id = server_last_step.get("step_id") or server_last_step.get("mach_id")
-    local_total = len(local_step_ids)
+    local_total = len(local_steps)
+    local_ids: set[str] = {s["id"] for s in local_steps if s.get("id")}
 
-    print(f"Pull status for session {session_id}:")
-    print(f"  Local steps:  {local_total}")
-    print(f"  Server steps: {server_step_count}")
+    print(f"Pulling sync state for session {session_id}...")
+    print(f"  Local steps : {local_total}")
 
-    if server_merkle:
-        # Read local merkle for comparison
-        merkle_path = store.paths.sessions_dir / session_id / "merkle.sig"
-        local_merkle = {}
-        if merkle_path.exists():
-            with open(merkle_path, "r", encoding="utf-8") as f:
-                local_merkle = json.load(f)
-        local_root = local_merkle.get("root")
-        if local_root == server_merkle:
-            print(f"  Merkle roots match: {server_merkle[:16]}...")
-        else:
-            print(f"  Merkle DIVERGED:")
-            print(f"    Local:  {local_root[:16] if local_root else '(none)'}...")
-            print(f"    Server: {server_merkle[:16]}...")
+    # ── 3. Paginate server steps ─────────────────────────────────────────────
+    from mach.models import PullStepsPage
 
-    # Determine how many steps are unpushed
-    if server_last_step_id and server_last_step_id in local_step_ids:
-        idx = local_step_ids.index(server_last_step_id)
-        unpushed = local_total - idx - 1
-        print(f"  Server has up to step: {server_last_step_id}")
-        print(f"  Unpushed steps: {unpushed}")
+    server_records: list = []   # list[PullStepRecord]
+    server_total: int | None = None
+    page = 1
 
-        # Update local tracking to match server state
+    while True:
+        url = (
+            f"{steps_base}"
+            f"?steps_after=0&size={PULL_PAGE_SIZE}&page={page}"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            method="GET",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = resp.read().decode("utf-8")
+                data = json.loads(body) if body else {}
+        except urllib.error.HTTPError as http_err:
+            if http_err.code == 404:
+                # ── Case: session does not exist on server ───────────────────
+                print(f"  Session not found on server (404).")
+                print(f"  Clearing sync cursor so all {local_total} local step(s) will be pushed.")
+                _push_reset(session_id, reset_to=None)
+                return
+            err_body = http_err.read().decode("utf-8", errors="replace")
+            print(f"Error: Server returned {http_err.code}", file=sys.stderr)
+            if err_body:
+                print(err_body, file=sys.stderr)
+            sys.exit(1)
+        except urllib.error.URLError as url_err:
+            print(f"Error: Could not connect to server ({steps_base}): {url_err}", file=sys.stderr)
+            sys.exit(1)
+
+        pulled = PullStepsPage.from_dict(data, page=page, size=PULL_PAGE_SIZE)
+
+        # Capture total from first page
+        if server_total is None and pulled.count is not None:
+            server_total = pulled.count
+
+        server_records.extend(pulled.results)
+
+        fetched = len(server_records)
+        total_str = f"/{server_total}" if server_total is not None else ""
+        sys.stdout.write(f"\r  Fetching from server: {fetched}{total_str} steps")
+        sys.stdout.flush()
+
+        # Stop when there are no more pages or the page came back empty
+        if not pulled.has_next or not pulled.results:
+            break
+        page += 1
+
+    print()  # newline after the inline progress
+
+    server_total_actual = server_total if server_total is not None else len(server_records)
+    print(f"  Server steps: {server_total_actual}")
+
+    # ── 4. Analyse gaps ──────────────────────────────────────────────────────
+    # Ordered list of mach_ids as the server knows them
+    server_mach_ids: list[str] = [r.mach_id for r in server_records if r.mach_id]
+    server_id_set: set[str] = set(server_mach_ids)
+
+    # Steps on server that also exist locally (preserving server order)
+    matched = [sid for sid in server_mach_ids if sid in local_ids]
+
+    # Steps on server NOT in local (unusual — e.g. pushed from another machine)
+    server_only = [sid for sid in server_mach_ids if sid not in local_ids]
+
+    # Local steps missing from server (these still need to be pushed)
+    local_only = [s["id"] for s in local_steps if s.get("id") and s["id"] not in server_id_set]
+
+    # Last step that both sides agree on → becomes the new sync cursor
+    last_synced_id: str | None = matched[-1] if matched else None
+
+    # ── 5. Print clear summary ───────────────────────────────────────────────
+    print()
+
+    if server_total_actual == 0:
+        # ── Case: session exists on server but has no steps yet ──────────────
+        print("  Server has the session but no steps yet.")
+        print(f"  Clearing sync cursor — run `mach push {session_id}` to push all {local_total} steps.")
+        _push_reset(session_id, reset_to=None)
+        return
+
+    if server_only:
+        print(f"  ⚠  {len(server_only)} step(s) on server not found locally.")
+        print(f"     Another machine may have pushed to this session.")
+        sample = ", ".join(server_only[:3])
+        suffix = "..." if len(server_only) > 3 else ""
+        print(f"     Server-only: {sample}{suffix}")
+
+    if local_only:
+        print(f"  ↑  {len(local_only)} local step(s) not on server yet.")
+    elif not server_only:
+        # ── Case: fully in sync ──────────────────────────────────────────────
+        print("  ✓  Fully in sync — local and server steps match.")
+
+    # ── 6. Update Mach sync state ─────────────────────────────────────────────
+    if last_synced_id:
         store.update_push_state(
             session_id,
             mach_updates={
-                "last_pushed_step_id": server_last_step_id,
-                "pushed_root": server_merkle,
+                "last_pushed_step_id": last_synced_id,
                 "last_pushed_ts": int(time.time()),
-                "server_session_id": server_state.get("id"),
             },
-            step_count=server_step_count,
+            step_count=server_total_actual,
         )
-        print(f"  Local push state synchronized with server.")
-        if unpushed > 0:
-            print(f"  Run `mach push {session_id}` to push remaining {unpushed} steps.")
-    elif server_step_count == 0:
-        # Server has no steps — full reset so everything can be pushed
-        print(f"  Server has no steps. Resetting local push state for full re-push...")
-        _push_reset(session_id, reset_to=None)
-        print(f"  Run `mach push {session_id}` to push all {local_total} steps.")
+        print(f"  Sync cursor → {last_synced_id}")
     else:
-        # Server has steps but we can't correlate — warn the user
-        print(f"  Warning: Could not correlate server state with local steps.")
-        print(f"  Server last step: {server_last_step_id or '(unknown)'}")
-        print(f"  Consider `mach push --reset {session_id}` for a full re-push.")
+        # Nothing in common — treat as a full reset
+        print("  No overlapping steps found between local and server.")
+        print("  Clearing sync cursor for a full re-push.")
+        _push_reset(session_id, reset_to=None)
+
+    if local_only:
+        print(f"\n  Run `mach push {session_id}` to push {len(local_only)} remaining step(s).")
+
 
 
 def _format_push_step(store: SessionStore, step: dict, blobs: dict[str, str]) -> dict:

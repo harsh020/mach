@@ -315,3 +315,47 @@ class PushResponse:
             steps_received=int(data.get("steps_received") or 0),
             created=data.get("created"),
         )
+
+
+@dataclass
+class PullStepRecord:
+    """A single step record as returned by the server's step-listing endpoint."""
+    server_id: Optional[str]    # server's own UUID for this push record
+    mach_id: Optional[str]      # original local step id (e.g. step_xxxx)
+    step_num: Optional[int]
+    step_type: Optional[str]
+    created: Optional[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PullStepRecord":
+        return cls(
+            server_id=data.get("id"),
+            mach_id=data.get("mach_id") or data.get("step_id"),
+            step_num=data.get("step_num"),
+            step_type=data.get("type"),
+            created=data.get("created"),
+        )
+
+
+@dataclass
+class PullStepsPage:
+    """One page from GET /api/v1/sessions/{id}/steps (Django DRF pagination)."""
+    results: list[PullStepRecord]
+    count: Optional[int]    # total steps on server across all pages
+    pages: Optional[int]    # total number of pages
+    page: int               # current page (1-indexed)
+    size: int               # page size requested
+    has_next: bool          # True when a next page exists
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], page: int, size: int) -> "PullStepsPage":
+        raw = data.get("results") or []
+        return cls(
+            results=[PullStepRecord.from_dict(r) for r in raw],
+            count=data.get("count"),
+            pages=data.get("pages"),
+            page=page,
+            size=size,
+            has_next=bool(data.get("next")),
+        )
+

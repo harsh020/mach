@@ -91,11 +91,22 @@ class SessionStore:
             "agent": agent,
             "branch": current_branch(self.paths.repo_root),
             "remote": {
-                "url": remote_origin_url(self.paths.repo_root),
-                "repository_name": repository_name(self.paths.repo_root),
-                "last_pushed_step_id": None,
-                "pushed_root": None,
-                "last_pushed_ts": 0
+                "git": {
+                    "url": remote_origin_url(self.paths.repo_root),
+                    "repository_name": repository_name(self.paths.repo_root),
+                },
+                "mach": {
+                    "last_push_id": None,
+                    "last_pushed_at": None,
+                    "last_pushed_ts": 0,
+                    "last_pushed_step_id": None,
+                    "pushed_root": None,
+                    "server_session_id": None,
+                    "server_root_before": None,
+                    "server_root_after": None,
+                    "blobs_received": None,
+                    "steps_received": None,
+                },
             },
             "pre_commit": pre_commit,
             "post_commit": None,
@@ -388,7 +399,8 @@ class SessionStore:
         self,
         session_id: str,
         *,
-        remote_updates: dict[str, Any],
+        git_updates: dict[str, Any] | None = None,
+        mach_updates: dict[str, Any] | None = None,
         step_count: int | None = None,
         risk_count: int | None = None,
     ) -> dict[str, Any]:
@@ -396,7 +408,14 @@ class SessionStore:
         with file_lock(self.paths.lock_path):
             meta = self.read_session_meta(session_id)
             remote = dict(meta.get("remote") or {})
-            remote.update(remote_updates)
+            if git_updates:
+                git = dict(remote.get("git") or {})
+                git.update(git_updates)
+                remote["git"] = git
+            if mach_updates:
+                mach = dict(remote.get("mach") or {})
+                mach.update(mach_updates)
+                remote["mach"] = mach
             meta["remote"] = remote
             self._write_session_meta(meta)
             self._upsert_session_index(
@@ -643,7 +662,7 @@ class SessionStore:
                     meta["post_commit"],
                     step_count,
                     risk_count,
-                    meta.get("remote", {}).get("last_pushed_ts"),
+                    (meta.get("remote") or {}).get("mach", {}).get("last_pushed_ts"),
                     meta.get("agent_session_id"),
                 ),
             )

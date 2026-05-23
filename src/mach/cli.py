@@ -198,13 +198,15 @@ def push_command(args: argparse.Namespace) -> None:
 
         meta = store.read_session_meta(session_id)
         remote = meta.get("remote", {})
-        remote_url = remote.get("url") or remote_origin_url(store.paths.repo_root)
-        repo_name = remote.get("repository_name") or repository_name(store.paths.repo_root)
+        git_info = remote.get("git") or {}
+        mach_state = remote.get("mach") or {}
+        remote_url = git_info.get("url") or remote_origin_url(store.paths.repo_root)
+        repo_name = git_info.get("repository_name") or repository_name(store.paths.repo_root)
         print(f"  Repository: {repo_name}")
         print("  Calculating Merkle deltas...")
-        
+
         # Determine what needs to be pushed
-        last_pushed_id = remote.get("last_pushed_step_id")
+        last_pushed_id = mach_state.get("last_pushed_step_id")
         session_dir = store.paths.sessions_dir / session_id
         steps_file = session_dir / "steps.jsonl"
         
@@ -324,9 +326,11 @@ def push_command(args: argparse.Namespace) -> None:
             pushed_at = push_response.created or push_response.session.synced_at
             store.update_push_state(
                 session_id,
-                remote_updates={
+                git_updates={
                     "url": remote_url,
                     "repository_name": repo_name,
+                },
+                mach_updates={
                     "last_push_id": push_response.id,
                     "last_pushed_at": pushed_at,
                     "last_pushed_ts": int(time.time()),
@@ -354,14 +358,12 @@ def push_command(args: argparse.Namespace) -> None:
 
 
 def _push_reset(session_id: str, reset_to: str | None = None) -> None:
-    """Reset local push tracking so the session can be re-pushed."""
+    """Reset local Mach push-sync state so the session can be re-pushed."""
     store = SessionStore()
     meta = store.read_session_meta(session_id)
     if not meta:
         print(f"Error: Session {session_id} not found.", file=sys.stderr)
         sys.exit(1)
-
-    remote = meta.get("remote", {})
 
     if reset_to:
         # Validate that the step_id actually exists in the session
@@ -379,28 +381,21 @@ def _push_reset(session_id: str, reset_to: str | None = None) -> None:
             print(f"  Available steps: {', '.join(step_ids[:5])}{'...' if len(step_ids) > 5 else ''}", file=sys.stderr)
             sys.exit(1)
 
-        remote["last_pushed_step_id"] = reset_to
+        store.update_push_state(
+            session_id,
+            mach_updates={"last_pushed_step_id": reset_to},
+        )
         print(f"Reset push state for {session_id} to step {reset_to}.")
         print(f"  Steps after '{reset_to}' will be pushed on next `mach push`.")
     else:
-        # Full reset — clear all push tracking
-        remote["last_pushed_step_id"] = None
-        remote["pushed_root"] = None
-        remote["last_pushed_ts"] = 0
-        remote["last_push_id"] = None
-        remote["server_session_id"] = None
-        remote["server_root_before"] = None
-        remote["server_root_after"] = None
-        remote["blobs_received"] = None
-        remote["steps_received"] = None
+        # Full reset — wipe all Mach sync state
+        from mach.models import MachSyncState
+        store.update_push_state(
+            session_id,
+            mach_updates=MachSyncState().to_dict(),
+        )
         print(f"Fully reset push state for {session_id}.")
         print(f"  All steps will be pushed on next `mach push`.")
-
-    meta["remote"] = remote
-    store.update_push_state(
-        session_id,
-        remote_updates=remote,
-    )
 
 
 def pull_command(args: argparse.Namespace) -> None:
@@ -419,7 +414,7 @@ def pull_command(args: argparse.Namespace) -> None:
 
     config = store.read_config()
     base_url = config.get("api_base_url", "http://localhost:8000").rstrip("/")
-    endpoint = f"{base_url}/api/v1/sessions/{session_id}/status/"
+    endpoint = f"{base_url}/api/v1/sessions/{session_id}/"
 
     req = urllib.request.Request(
         endpoint,
@@ -431,7 +426,7 @@ def pull_command(args: argparse.Namespace) -> None:
     )
 
     try:
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             resp_body = response.read().decode("utf-8")
             server_state = json.loads(resp_body) if resp_body else {}
     except urllib.error.HTTPError as http_err:
@@ -494,7 +489,7 @@ def pull_command(args: argparse.Namespace) -> None:
         # Update local tracking to match server state
         store.update_push_state(
             session_id,
-            remote_updates={
+            mach_updates={
                 "last_pushed_step_id": server_last_step_id,
                 "pushed_root": server_merkle,
                 "last_pushed_ts": int(time.time()),

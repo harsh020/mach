@@ -109,24 +109,82 @@ class Step:
         )
 
 @dataclass
-class RemoteInfo:
+class GitRemoteInfo:
+    """Static facts about the Git remote — read from local git config."""
     url: Optional[str] = None
     repository_name: Optional[str] = None
-    last_pushed_step_id: Optional[str] = None
-    pushed_root: Optional[str] = None
-    last_pushed_ts: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RemoteInfo":
+    def from_dict(cls, data: dict[str, Any]) -> "GitRemoteInfo":
         return cls(
             url=data.get("url"),
             repository_name=data.get("repository_name"),
+        )
+
+
+@dataclass
+class MachSyncState:
+    """Mutable push-sync state written by `mach push` / `mach pull`."""
+    last_push_id: Optional[str] = None
+    last_pushed_at: Optional[str] = None
+    last_pushed_ts: int = 0
+    last_pushed_step_id: Optional[str] = None
+    pushed_root: Optional[str] = None
+    server_session_id: Optional[str] = None
+    server_root_before: Optional[str] = None
+    server_root_after: Optional[str] = None
+    blobs_received: Optional[int] = None
+    steps_received: Optional[int] = None
+
+    def reset(self) -> "MachSyncState":
+        """Return a clean MachSyncState (forces a full re-push next time)."""
+        return MachSyncState()
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "MachSyncState":
+        return cls(
+            last_push_id=data.get("last_push_id"),
+            last_pushed_at=data.get("last_pushed_at"),
+            last_pushed_ts=data.get("last_pushed_ts", 0),
             last_pushed_step_id=data.get("last_pushed_step_id"),
             pushed_root=data.get("pushed_root"),
-            last_pushed_ts=data.get("last_pushed_ts", 0)
+            server_session_id=data.get("server_session_id"),
+            server_root_before=data.get("server_root_before"),
+            server_root_after=data.get("server_root_after"),
+            blobs_received=data.get("blobs_received"),
+            steps_received=data.get("steps_received"),
+        )
+
+
+@dataclass
+class RemoteInfo:
+    """Top-level remote block stored in meta.json under the 'remote' key."""
+    git: GitRemoteInfo = field(default_factory=GitRemoteInfo)
+    mach: MachSyncState = field(default_factory=MachSyncState)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "git": self.git.to_dict(),
+            "mach": self.mach.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RemoteInfo":
+        # Backward-compat: old flat format had url / last_pushed_step_id at top level.
+        if "url" in data or "last_pushed_step_id" in data:
+            return cls(
+                git=GitRemoteInfo.from_dict(data),
+                mach=MachSyncState.from_dict(data),
+            )
+        return cls(
+            git=GitRemoteInfo.from_dict(data.get("git") or {}),
+            mach=MachSyncState.from_dict(data.get("mach") or {}),
         )
 
 @dataclass

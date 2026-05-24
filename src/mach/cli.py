@@ -14,12 +14,15 @@ from pathlib import Path
 
 from mach.auth import save_token, logout, get_token
 
+from mach.config import DEFAULT_CONFIG
 from mach.hooks import HookManager
 from mach.ingest import EventInboxService
 from mach.session import MachError, SessionStore
 from mach.tracker import TrackerService
 
 from mach.ui import render_sessions_list, render_session_steps, render_session_details
+
+STORE_CONTENT_TYPES = list(DEFAULT_CONFIG["store_content"])
 
 # Backward-compatible aliases used by log_command / show_command
 def format_sessions_list(sessions: list[dict]) -> str:
@@ -126,12 +129,30 @@ def _choose_hook_agents(manager: HookManager, requested_agents: str | None = Non
     return _select_from_terminal("Select agent hooks to install:", choices, default_agents)
 
 
+def _choose_store_content(requested_content: str | None = None) -> list[str]:
+    if requested_content is not None:
+        return [step_type.strip() for step_type in requested_content.split(",") if step_type.strip()]
+
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        return list(STORE_CONTENT_TYPES)
+
+    choices = [
+        {
+            "value": step_type,
+            "label": step_type,
+        }
+        for step_type in STORE_CONTENT_TYPES
+    ]
+    return _select_from_terminal("Select step content to store:", choices, list(STORE_CONTENT_TYPES))
+
+
 def init_command(args: argparse.Namespace) -> None:
     store = SessionStore()
     mach_dir = store.init_repo()
     manager = HookManager()
     hook_agents = _choose_hook_agents(manager, args.hook_agents)
-    config = store.update_config({"enabled": True, "hook_agents": hook_agents})
+    store_content = _choose_store_content(args.store_content)
+    config = store.update_config({"enabled": True, "hook_agents": hook_agents, "store_content": store_content})
     hook_results = manager.install(hook_agents) if hook_agents else {"installed": []}
     tracker = TrackerService()
     tracker.ensure_state()
@@ -957,6 +978,7 @@ def main() -> None:
 
     init_parser = subparsers.add_parser("init", help="Initialize .mach metadata.")
     init_parser.add_argument("--hook-agents", help="Comma-separated agents to install without prompting.")
+    init_parser.add_argument("--store-content", help="Comma-separated step types to store content for without prompting.")
     init_parser.set_defaults(handler=init_command)
 
     enable_parser = subparsers.add_parser("enable", help="Enable Mach hooks and background tracking in this repo.")

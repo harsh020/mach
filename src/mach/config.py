@@ -8,7 +8,7 @@ DEFAULT_CONFIG = {
     "commit_closes_session": False,
     "auto_tracking": True,
     "use_tui": True,
-    "db_enabled": True,
+    "db_enabled": False,
     "hook_agents": ["claude", "codex", "copilot", "cursor", "gemini"],
     "poll_interval_sec": 2,
     "ignore_paths": [

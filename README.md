@@ -63,11 +63,11 @@ pipx upgrade mach
 Navigate to any codebase and initialize Mach:
 
 ```bash
-# Bootstrap .mach and launch the interactive agent selector
+# Bootstrap .mach and launch the interactive setup selectors
 mach init
 
-# Or bypass the interactive prompt for CI/CD
-mach init --hook-agents claude,codex,gemini
+# Or bypass the interactive prompts for CI/CD
+mach init --hook-agents claude,codex,gemini --store-content input,output,reasoning,tool
 ```
 
 ### The TUI Dashboard
@@ -114,7 +114,7 @@ mach config set --use-tui false
 ## 💻 Command Reference
 
 ### Setup & Configuration
-- `mach init`: Bootstrap the repository, interactively select hooks, and start the daemon.
+- `mach init`: Bootstrap the repository, interactively select hooks and stored content types, and start the daemon.
 - `mach config show|set`: View or update Mach configuration (e.g. `mach config set --db-enabled false`).
 - `mach enable` / `mach disable`: Globally toggle tracking without losing configuration.
 

@@ -1,22 +1,18 @@
-# MIT License with Additional Restriction
+# Mach License (Proprietary + Limited Use)
 
-Copyright (c) 2026 Harsh Soni
+Copyright (c) 2026 Harsh Soni. All Rights Reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, subject to the following conditions:
+**Permission is hereby granted**, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to use the Software for personal and internal development purposes only.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+**You may:**
+- Clone the repository
+- Use the Software locally for your own projects
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND...
+**You may NOT:**
+- Copy, reproduce, or distribute the Software
+- Create derivative works or competing products
+- Use the Software (or any part of it) in any commercial product or service
+- Publish, sell, or host the Software (or modified versions)
+- Remove or modify this license notice
 
----
-
-**Additional Restriction:**
-
-You may not use this software to create a competing product or service that
-offers substantially similar functionality (session recording, push/pull/clone
-of AI agent sessions) as a hosted or distributed product.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED...

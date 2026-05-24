@@ -5,7 +5,10 @@
 **Local-first, Git-adjacent execution ledger for AI agents.**
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Restricted_Mach-eb4034)](LICENSE.md)
+
+⭐ Star the repo if you find it useful!
+Sign up for early access → [cognatoai.com](https://cognatoai.com)
 
 </div>
 
@@ -124,6 +127,10 @@ mach config set --use-tui false
 ### Daemon Controls & Background Tracking
 - `mach track start|stop|status`: Manage the background ingestion process.
 - `mach hooks status`: Check the health and presence of your AI agent intercepts.
+
+## ⚖️ License
+
+This project is licensed under the [Mach License with Restrictions](LICENSE.md) — you may use this software, but you **may not copy, reproduce, or use it to create a competing hosted or distributed product** that offers substantially similar functionality.
 
 > [!NOTE]
 > **The `workspace_observer` pseudo-agent:**

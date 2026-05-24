@@ -9,6 +9,7 @@ import tty
 import getpass
 import urllib.request
 import urllib.error
+import urllib.parse
 import time
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from mach.auth import save_token, logout, get_token
 from mach.config import DEFAULT_CONFIG
 from mach.hooks import HookManager
 from mach.ingest import EventInboxService
+from mach.models import RepositoryDetails
 from mach.session import MachError, SessionStore
 from mach.tracker import TrackerService
 
@@ -196,11 +198,195 @@ def logout_command(_: argparse.Namespace) -> None:
     print("Success: Logged out.")
 
 
-def push_command(args: argparse.Namespace) -> None:
+def _require_auth_token() -> str:
     token = get_token()
     if not token:
         print("Error: You must log in first. Run: mach login", file=sys.stderr)
         sys.exit(1)
+    return token
+
+
+def _api_base_url(store: SessionStore) -> str:
+    config = store.read_config()
+    return config.get("api_base_url", "http://localhost:8000").rstrip("/")
+
+
+def _read_api_json(req: urllib.request.Request, context: str) -> dict:
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            body = response.read().decode("utf-8")
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as http_err:
+        body = http_err.read().decode("utf-8", errors="replace")
+        if http_err.code in (401, 403):
+            print(f"Error: Access denied while {context}.", file=sys.stderr)
+        elif http_err.code == 404:
+            print(f"Error: Not found while {context}.", file=sys.stderr)
+        else:
+            print(f"Error: Backend returned status {http_err.code} while {context}.", file=sys.stderr)
+        if body:
+            print(body, file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as req_err:
+        print(f"Error: Could not connect to backend while {context}: {req_err}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _auth_request(url: str, token: str, method: str = "GET") -> urllib.request.Request:
+    return urllib.request.Request(
+        url,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        method=method,
+    )
+
+
+def _repo_endpoint(base_url: str, repository_name: str) -> str:
+    return f"{base_url}/api/v1/repositories/pull/{urllib.parse.quote(repository_name, safe='')}/"
+
+
+def _session_endpoint(base_url: str, session_id: str) -> str:
+    return f"{base_url}/api/v1/sessions/{urllib.parse.quote(session_id, safe='')}/"
+
+
+def _repo_session_endpoint(base_url: str, repository_name: str, session_id: str) -> str:
+    repo = urllib.parse.quote(repository_name, safe="")
+    session = urllib.parse.quote(session_id, safe="")
+    return f"{base_url}/api/v1/repositories/{repo}/sessions/{session}/"
+
+
+def _repo_identifiers(repository: RepositoryDetails | dict) -> set[str]:
+    repo = repository.to_dict() if isinstance(repository, RepositoryDetails) else repository
+    identifiers = set()
+    for key in ("id", "name", "repository_name", "full_name", "repository", "url", "remote_url", "external_id"):
+        value = repo.get(key)
+        if value is not None:
+            identifiers.add(str(value))
+    metadata = repo.get("metadata")
+    if isinstance(metadata, dict):
+        identifiers.update(str(value) for value in metadata.values() if value is not None)
+    return {value for value in identifiers if value}
+
+
+def _repo_allows_read(repository: RepositoryDetails | dict) -> bool:
+    repo = repository.to_dict() if isinstance(repository, RepositoryDetails) else repository
+    if repo.get("is_active") is False:
+        return False
+
+    permissions = repo.get("permissions")
+    if isinstance(permissions, dict):
+        for key in ("read", "pull", "admin", "write"):
+            if permissions.get(key):
+                return True
+        if any(key in permissions for key in ("read", "pull", "admin", "write")):
+            return False
+
+    for key in ("can_read", "has_read_access", "read_access"):
+        if key in repo:
+            return bool(repo.get(key))
+
+    role = str(repo.get("role") or repo.get("access") or repo.get("permission") or "").lower()
+    if role:
+        return role in {"read", "reader", "pull", "write", "maintain", "admin", "owner"}
+
+    return True
+
+
+def _session_repo_identifiers(meta: dict) -> set[str]:
+    remote = meta.get("remote") or {}
+    git_info = remote.get("git") or remote
+    return {
+        str(value)
+        for value in (
+            git_info.get("url"),
+            git_info.get("repository_name"),
+            meta.get("repository"),
+            meta.get("repository_name"),
+        )
+        if value
+    }
+
+
+def _validate_session_against_tracked_repo(store: SessionStore, session_id: str, token: str) -> dict:
+    repository = store.read_tracked_repo()
+    if not repository:
+        print("Error: No tracked repository is configured. Run `mach pull --repository <repository_name>` first.", file=sys.stderr)
+        sys.exit(1)
+
+    if repository.is_active is False:
+        print("Error: Tracked repository is not active.", file=sys.stderr)
+        sys.exit(1)
+    if not _repo_allows_read(repository):
+        print("Error: Tracked repository metadata does not grant read access.", file=sys.stderr)
+        sys.exit(1)
+
+    local_meta = store.read_session_meta(session_id)
+    repo_ids = _repo_identifiers(repository)
+    session_repo_ids = _session_repo_identifiers(local_meta)
+    if repo_ids and session_repo_ids and repo_ids.isdisjoint(session_repo_ids):
+        print("Error: Session does not belong to the tracked repository.", file=sys.stderr)
+        print(f"  Tracked repo: {', '.join(sorted(repo_ids)[:3])}", file=sys.stderr)
+        print(f"  Session repo: {', '.join(sorted(session_repo_ids)[:3])}", file=sys.stderr)
+        sys.exit(1)
+
+    base_url = _api_base_url(store)
+    validation_url = (
+        _repo_session_endpoint(base_url, repository.name, session_id)
+        if repository.name
+        else _session_endpoint(base_url, session_id)
+    )
+    session_data = _read_api_json(
+        _auth_request(validation_url, token),
+        f"validating access to session {session_id}",
+    )
+    remote_repo = session_data.get("repository")
+    remote_repo_ids = _repo_identifiers(remote_repo) if isinstance(remote_repo, dict) else {str(remote_repo)} if remote_repo else set()
+    if repo_ids and remote_repo_ids and repo_ids.isdisjoint(remote_repo_ids):
+        print("Error: Remote session belongs to a different repository than the tracked repo.", file=sys.stderr)
+        sys.exit(1)
+    return session_data
+
+
+def _pull_repository(repository_name: str) -> None:
+    token = _require_auth_token()
+    store = SessionStore()
+    store.init_repo()
+    base_url = _api_base_url(store)
+    payload = _read_api_json(
+        _auth_request(_repo_endpoint(base_url, repository_name), token),
+        f"pulling repository {repository_name}",
+    )
+    repository = RepositoryDetails.from_dict({
+        **payload,
+        "pulled_at": int(time.time()),
+        "api_base_url": base_url,
+    })
+
+    if repository.is_active is False:
+        print(f"Error: Repository '{repository_name}' is not active.", file=sys.stderr)
+        sys.exit(1)
+
+    if not _repo_allows_read(repository):
+        print(f"Error: Your token does not have read access to repository '{repository_name}'.", file=sys.stderr)
+        sys.exit(1)
+
+    if not repository.id or not repository.name:
+        print(f"Error: Backend returned incomplete repository metadata for '{repository_name}'.", file=sys.stderr)
+        sys.exit(1)
+
+    store.write_tracked_repo(repository)
+    display_name = repository.name or repository_name
+    print(f"Success: Tracking repository {display_name}.")
+    print(f"  ID: {repository.id}")
+    if repository.default_branch:
+        print(f"  Default branch: {repository.default_branch}")
+    print(f"  Metadata: {store.paths.tracked_repo_path}")
+
+
+def push_command(args: argparse.Namespace) -> None:
+    token = _require_auth_token()
 
     session_id = args.session_id
 
@@ -223,8 +409,8 @@ def push_command(args: argparse.Namespace) -> None:
         mach_state = remote.get("mach") or {}
         # remote_url = git_info.get("url") or remote_origin_url(store.paths.repo_root)
         remote_url = git_info.get("url")
-        repo_name = git_info.get("repository_name") or repository_name(store.paths.repo_root)
-        print(f"  Repository: {repo_name}")
+        repository_label = git_info.get("repository_name") or repository_name(store.paths.repo_root)
+        print(f"  Repository: {repository_label}")
         print("  Calculating Merkle deltas...")
 
         # Determine what needs to be pushed
@@ -281,7 +467,7 @@ def push_command(args: argparse.Namespace) -> None:
                 formatted_steps.append(_format_push_step(store, step, blobs))
 
             payload_obj = PushPayload(
-                repository=remote_url or repo_name,
+                repository=remote_url or repository_label,
                 meta=PushSessionMeta(
                     id=session_id,
                     agent=meta.get("agent", "unknown"),
@@ -350,7 +536,7 @@ def push_command(args: argparse.Namespace) -> None:
                 session_id,
                 git_updates={
                     "url": remote_url,
-                    "repository_name": repo_name,
+                    "repository_name": repository_label,
                 },
                 mach_updates={
                     "last_push_id": push_response.id,
@@ -427,12 +613,41 @@ def pull_command(args: argparse.Namespace) -> None:
     """
     PULL_PAGE_SIZE = 50  # steps per request — keeps server load reasonable
 
-    token = get_token()
-    if not token:
-        print("Error: You must log in first. Run: mach login", file=sys.stderr)
+    if args.session_id or args.session:
+        print("Error: Session is currently not supported to pull. Use clone instead.")
         sys.exit(1)
 
-    session_id = args.session_id
+    if args.repository and not args.repository_name:
+        print("Error: Provide a repository name to pull.", file=sys.stderr)
+        sys.exit(1)
+
+    _pull_repository(args.repository)
+
+# This is old pull command (replacement for pull_command) this pulls sessions as well as repository
+# Currently we don't support pulling session
+def __pull_command(args: argparse.Namespace) -> None:
+    """Reconcile local push-tracking with the server by paginating through the
+    server's step listing.  Does NOT modify local session steps — only updates
+    the local Mach sync cursor so the next `mach push` sends the right delta.
+    """
+    PULL_PAGE_SIZE = 50  # steps per request — keeps server load reasonable
+
+    if args.repository and (args.session_id or args.session):
+        print("Error: Use either --repository or --session, not both.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.repository:
+        _pull_repository(args.repository)
+        return
+
+    token = _require_auth_token()
+
+    session_id = args.session or args.session_id
+    if not session_id:
+        print("Error: Provide a session with `mach pull --session <session_id>`.", file=sys.stderr)
+        print("       To track a repository, use `mach pull --repository <repository_name>`.", file=sys.stderr)
+        sys.exit(1)
+
     store = SessionStore()
 
     # ── 1. Verify the session exists locally ────────────────────────────────
@@ -444,8 +659,9 @@ def pull_command(args: argparse.Namespace) -> None:
         print(f"Error: Session '{session_id}' not found locally.", file=sys.stderr)
         sys.exit(1)
 
-    config = store.read_config()
-    base_url = config.get("api_base_url", "http://localhost:8000").rstrip("/")
+    _validate_session_against_tracked_repo(store, session_id, token)
+
+    base_url = _api_base_url(store)
     steps_base = f"{base_url}/api/v1/sessions/{session_id}/steps"
 
     # ── 2. Load local step index ─────────────────────────────────────────────
@@ -1150,8 +1366,11 @@ def main() -> None:
     push_parser.add_argument("--reset-to", metavar="STEP_ID", help="Reset push state to a specific step ID (re-push steps after it).")
     push_parser.set_defaults(handler=push_command)
 
-    pull_parser = subparsers.add_parser("pull", help="Check server state for a session and reconcile local tracking.")
-    pull_parser.add_argument("session_id", help="The ID of the session to check.")
+    pull_parser = subparsers.add_parser("pull", help="Pull repository metadata or reconcile session tracking.")
+    # pull_parser.add_argument("session_id", nargs="?", help="The ID of the session to check.") # Uncomment this and remove the repository_name arg when we support pulling sessions
+    pull_parser.add_argument("repository_name", nargs="?", help="The name of the repository to pull.")
+    pull_parser.add_argument("-r", "--repository", metavar="repository_name", help="Repository name to track as the trust boundary.")
+    pull_parser.add_argument("-s", "--session", help="The ID of the session to check.")
     pull_parser.set_defaults(handler=pull_command)
 
     update_parser = subparsers.add_parser("update", help="Update the global Mach installation to the latest version.")

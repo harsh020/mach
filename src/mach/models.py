@@ -26,6 +26,7 @@ class MachPaths:
     tracker_pid_path: Path
     tracker_log_path: Path
     tracker_lock_path: Path
+    tracked_repo_path: Path
 
 @dataclass
 class FileChange:
@@ -186,6 +187,44 @@ class RemoteInfo:
             git=GitRemoteInfo.from_dict(data.get("git") or {}),
             mach=MachSyncState.from_dict(data.get("mach") or {}),
         )
+
+
+@dataclass
+class RepositoryDetails:
+    id: str
+    name: str
+    remote_url: Optional[str] = None
+    provider: Optional[str] = None
+    external_id: Optional[str] = None
+    default_branch: Optional[str] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    is_active: bool = True
+    created: Optional[str] = None
+    modified: Optional[str] = None
+    pulled_at: Optional[int] = None
+    api_base_url: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RepositoryDetails":
+        raw = data.get("repo") if isinstance(data.get("repo"), dict) else data
+        return cls(
+            id=str(raw.get("id") or ""),
+            name=str(raw.get("name") or data.get("repository_name") or ""),
+            remote_url=raw.get("remote_url"),
+            provider=raw.get("provider"),
+            external_id=raw.get("external_id"),
+            default_branch=raw.get("default_branch"),
+            metadata=raw.get("metadata") or {},
+            is_active=raw.get("is_active", True),
+            created=raw.get("created"),
+            modified=raw.get("modified"),
+            pulled_at=data.get("pulled_at") or data.get("fetched_at"),
+            api_base_url=data.get("api_base_url"),
+        )
+
 
 @dataclass
 class SessionMeta:
@@ -358,4 +397,3 @@ class PullStepsPage:
             size=size,
             has_next=bool(data.get("next")),
         )
-

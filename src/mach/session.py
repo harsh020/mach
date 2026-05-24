@@ -10,6 +10,7 @@ from mach.db import connect, init_db, reset_db
 from mach.git_utils import current_branch, head_commit, remote_origin_url, repository_name
 from mach.locking import file_lock
 from mach.merkle import chain_hash, hash_payload
+from mach.models import RepositoryDetails
 from mach.repository import resolve_paths
 from mach.utils import (
     append_jsonl,
@@ -394,6 +395,18 @@ class SessionStore:
             current.update(updates)
             self._write_config(current)
             return current
+
+    def read_tracked_repo(self) -> RepositoryDetails | None:
+        self.init_repo()
+        if not self.paths.tracked_repo_path.exists():
+            return None
+        return RepositoryDetails.from_dict(read_json(self.paths.tracked_repo_path))
+
+    def write_tracked_repo(self, repository: RepositoryDetails) -> RepositoryDetails:
+        self.init_repo()
+        with file_lock(self.paths.lock_path):
+            write_json(self.paths.tracked_repo_path, repository.to_dict())
+            return repository
 
     # ── remote-format helpers ────────────────────────────────────────────────
 

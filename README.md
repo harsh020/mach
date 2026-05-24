@@ -68,6 +68,9 @@ mach init
 
 # Or bypass the interactive prompts for CI/CD
 mach init --hook-agents claude,codex,gemini --store-content input,output,reasoning,tool
+
+# Pull repository metadata and make that repo the local trust boundary
+mach pull --repository my-repo
 ```
 
 ### The TUI Dashboard
@@ -115,6 +118,7 @@ mach config set --use-tui false
 
 ### Setup & Configuration
 - `mach init`: Bootstrap the repository, interactively select hooks and stored content types, and start the daemon.
+- `mach pull --repository <repository_name>`: Validate token access, pull repository metadata, and store the tracked repo locally.
 - `mach config show|set`: View or update Mach configuration (e.g. `mach config set --db-enabled false`).
 - `mach enable` / `mach disable`: Globally toggle tracking without losing configuration.
 

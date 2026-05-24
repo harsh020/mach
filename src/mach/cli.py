@@ -18,7 +18,7 @@ from mach.auth import save_token, logout, get_token
 from mach.config import DEFAULT_CONFIG
 from mach.hooks import HookManager
 from mach.ingest import EventInboxService
-from mach.models import RepositoryDetails
+from mach.models import PullSessionDetails, RepositoryDetails
 from mach.session import MachError, SessionStore
 from mach.tracker import TrackerService
 
@@ -251,12 +251,6 @@ def _session_endpoint(base_url: str, session_id: str) -> str:
     return f"{base_url}/api/v1/sessions/{urllib.parse.quote(session_id, safe='')}/"
 
 
-def _repo_session_endpoint(base_url: str, repository_name: str, session_id: str) -> str:
-    repo = urllib.parse.quote(repository_name, safe="")
-    session = urllib.parse.quote(session_id, safe="")
-    return f"{base_url}/api/v1/repositories/{repo}/sessions/{session}/"
-
-
 def _repo_identifiers(repository: RepositoryDetails | dict) -> set[str]:
     repo = repository.to_dict() if isinstance(repository, RepositoryDetails) else repository
     identifiers = set()
@@ -268,6 +262,62 @@ def _repo_identifiers(repository: RepositoryDetails | dict) -> set[str]:
     if isinstance(metadata, dict):
         identifiers.update(str(value) for value in metadata.values() if value is not None)
     return {value for value in identifiers if value}
+
+
+def _normalize_repo_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    value = url.strip().lower()
+    if value.endswith(".git"):
+        value = value[:-4]
+    if value.startswith("git@") and ":" in value:
+        host, path = value[4:].split(":", 1)
+        value = f"{host}/{path}"
+    elif "://" in value:
+        parsed = urllib.parse.urlparse(value)
+        value = f"{parsed.netloc}{parsed.path}"
+    return value.strip("/")
+
+
+def _repository_mismatches(expected: RepositoryDetails, actual: RepositoryDetails) -> list[str]:
+    mismatches = []
+    if expected.id and actual.id and expected.id != actual.id:
+        mismatches.append(f"id {actual.id!r} does not match tracked id {expected.id!r}")
+    if expected.name and actual.name and expected.name != actual.name:
+        mismatches.append(f"name {actual.name!r} does not match tracked name {expected.name!r}")
+
+    expected_url = _normalize_repo_url(expected.remote_url)
+    actual_url = _normalize_repo_url(actual.remote_url)
+    if expected_url and actual_url and expected_url != actual_url:
+        mismatches.append(f"remote URL {actual.remote_url!r} does not match tracked remote URL {expected.remote_url!r}")
+
+    if expected.external_id and actual.external_id and expected.external_id != actual.external_id:
+        mismatches.append(f"external id {actual.external_id!r} does not match tracked external id {expected.external_id!r}")
+    return mismatches
+
+
+def _validate_repository_matches_git(repository: RepositoryDetails, store: SessionStore) -> None:
+    from mach.git_utils import remote_origin_url, repository_name
+
+    local_name = repository_name(store.paths.repo_root)
+    if repository.name and local_name and repository.name != local_name:
+        print("Error: Pulled repository does not match this Git checkout.", file=sys.stderr)
+        print(f"  Git repository: {local_name}", file=sys.stderr)
+        print(f"  Pulled repository: {repository.name}", file=sys.stderr)
+        sys.exit(1)
+
+    local_url = remote_origin_url(store.paths.repo_root)
+    local_url_norm = _normalize_repo_url(local_url)
+    remote_url_norm = _normalize_repo_url(repository.remote_url)
+    if remote_url_norm and not local_url_norm:
+        print("Error: Pulled repository has a remote URL, but this checkout has no origin remote.", file=sys.stderr)
+        print(f"  Pulled remote URL: {repository.remote_url}", file=sys.stderr)
+        sys.exit(1)
+    if local_url_norm and remote_url_norm and local_url_norm != remote_url_norm:
+        print("Error: Pulled repository remote does not match this Git checkout.", file=sys.stderr)
+        print(f"  Git remote URL: {local_url}", file=sys.stderr)
+        print(f"  Pulled remote URL: {repository.remote_url}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _repo_allows_read(repository: RepositoryDetails | dict) -> bool:
@@ -309,19 +359,43 @@ def _session_repo_identifiers(meta: dict) -> set[str]:
     }
 
 
-def _validate_session_against_tracked_repo(store: SessionStore, session_id: str, token: str) -> dict:
+def _pull_session_details(store: SessionStore, session_id: str, token: str) -> PullSessionDetails:
+    base_url = _api_base_url(store)
+    payload = _read_api_json(
+        _auth_request(_session_endpoint(base_url, session_id), token),
+        f"pulling session {session_id}",
+    )
+    details = PullSessionDetails.from_dict(payload)
+    if not details.session_id:
+        print(f"Error: Backend returned incomplete session metadata for '{session_id}'.", file=sys.stderr)
+        sys.exit(1)
+    if details.session_id != session_id:
+        print("Error: Pulled session id does not match the requested session.", file=sys.stderr)
+        print(f"  Requested: {session_id}", file=sys.stderr)
+        print(f"  Pulled: {details.session_id}", file=sys.stderr)
+        sys.exit(1)
+    if not details.repository.id or not details.repository.name:
+        print(f"Error: Backend returned incomplete repository metadata for session '{session_id}'.", file=sys.stderr)
+        sys.exit(1)
+    return details
+
+
+def _require_tracked_repository(store: SessionStore) -> RepositoryDetails:
     repository = store.read_tracked_repo()
     if not repository:
         print("Error: No tracked repository is configured. Run `mach pull --repository <repository_name>` first.", file=sys.stderr)
         sys.exit(1)
-
     if repository.is_active is False:
         print("Error: Tracked repository is not active.", file=sys.stderr)
         sys.exit(1)
     if not _repo_allows_read(repository):
         print("Error: Tracked repository metadata does not grant read access.", file=sys.stderr)
         sys.exit(1)
+    return repository
 
+
+def _validate_session_against_tracked_repo(store: SessionStore, session_id: str, token: str) -> PullSessionDetails:
+    repository = _require_tracked_repository(store)
     local_meta = store.read_session_meta(session_id)
     repo_ids = _repo_identifiers(repository)
     session_repo_ids = _session_repo_identifiers(local_meta)
@@ -331,22 +405,14 @@ def _validate_session_against_tracked_repo(store: SessionStore, session_id: str,
         print(f"  Session repo: {', '.join(sorted(session_repo_ids)[:3])}", file=sys.stderr)
         sys.exit(1)
 
-    base_url = _api_base_url(store)
-    validation_url = (
-        _repo_session_endpoint(base_url, repository.name, session_id)
-        if repository.name
-        else _session_endpoint(base_url, session_id)
-    )
-    session_data = _read_api_json(
-        _auth_request(validation_url, token),
-        f"validating access to session {session_id}",
-    )
-    remote_repo = session_data.get("repository")
-    remote_repo_ids = _repo_identifiers(remote_repo) if isinstance(remote_repo, dict) else {str(remote_repo)} if remote_repo else set()
-    if repo_ids and remote_repo_ids and repo_ids.isdisjoint(remote_repo_ids):
+    session_details = _pull_session_details(store, session_id, token)
+    mismatches = _repository_mismatches(repository, session_details.repository)
+    if mismatches:
         print("Error: Remote session belongs to a different repository than the tracked repo.", file=sys.stderr)
+        for mismatch in mismatches:
+            print(f"  {mismatch}", file=sys.stderr)
         sys.exit(1)
-    return session_data
+    return session_details
 
 
 def _pull_repository(repository_name: str) -> None:
@@ -376,6 +442,7 @@ def _pull_repository(repository_name: str) -> None:
         print(f"Error: Backend returned incomplete repository metadata for '{repository_name}'.", file=sys.stderr)
         sys.exit(1)
 
+    _validate_repository_matches_git(repository, store)
     store.write_tracked_repo(repository)
     display_name = repository.name or repository_name
     print(f"Success: Tracking repository {display_name}.")
@@ -617,11 +684,37 @@ def pull_command(args: argparse.Namespace) -> None:
         print("Error: Session is currently not supported to pull. Use clone instead.")
         sys.exit(1)
 
-    if args.repository and not args.repository_name:
+    repository_name = args.repository or args.repository_name
+    if not repository_name:
         print("Error: Provide a repository name to pull.", file=sys.stderr)
         sys.exit(1)
 
-    _pull_repository(args.repository)
+    _pull_repository(repository_name)
+
+
+def clone_command(args: argparse.Namespace) -> None:
+    source_session_id = args.session_id
+    store = SessionStore()
+    token = _require_auth_token()
+    repository = _require_tracked_repository(store)
+    session_details = _pull_session_details(store, source_session_id, token)
+    mismatches = _repository_mismatches(repository, session_details.repository)
+    if mismatches:
+        print("Error: Remote session belongs to a different repository than the tracked repo.", file=sys.stderr)
+        for mismatch in mismatches:
+            print(f"  {mismatch}", file=sys.stderr)
+        sys.exit(1)
+
+    __pull_command(argparse.Namespace(repository=None, session=source_session_id, session_id=None))
+
+    result = store.clone_session(source_session_id)
+    print(f"Success: Cloned session {source_session_id}.")
+    print(f"  New session: {result['session_id']}")
+    print(f"  Forked from: {result['forked_from']}")
+    print(f"  Inherited steps: {result['step_count']}")
+    if result.get("last_pulled_step_id"):
+        print(f"  Push cursor: {result['last_pulled_step_id']}")
+
 
 # This is old pull command (replacement for pull_command) this pulls sessions as well as repository
 # Currently we don't support pulling session
@@ -804,7 +897,6 @@ def __pull_command(args: argparse.Namespace) -> None:
 
     if local_only:
         print(f"\n  Run `mach push {session_id}` to push {len(local_only)} remaining step(s).")
-
 
 
 def _format_push_step(store: SessionStore, step: dict, blobs: dict[str, str]) -> dict:
@@ -1372,6 +1464,10 @@ def main() -> None:
     pull_parser.add_argument("-r", "--repository", metavar="repository_name", help="Repository name to track as the trust boundary.")
     pull_parser.add_argument("-s", "--session", help="The ID of the session to check.")
     pull_parser.set_defaults(handler=pull_command)
+
+    clone_parser = subparsers.add_parser("clone", help="Clone a pulled session into a new local fork.")
+    clone_parser.add_argument("session_id", help="The session ID to clone.")
+    clone_parser.set_defaults(handler=clone_command)
 
     update_parser = subparsers.add_parser("update", help="Update the global Mach installation to the latest version.")
     update_parser.set_defaults(handler=update_command)

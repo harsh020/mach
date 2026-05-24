@@ -71,6 +71,9 @@ mach init --hook-agents claude,codex,gemini --store-content input,output,reasoni
 
 # Pull repository metadata and make that repo the local trust boundary
 mach pull --repository my-repo
+
+# Clone an existing session into a new local fork
+mach clone ses_123
 ```
 
 ### The TUI Dashboard
@@ -119,6 +122,7 @@ mach config set --use-tui false
 ### Setup & Configuration
 - `mach init`: Bootstrap the repository, interactively select hooks and stored content types, and start the daemon.
 - `mach pull --repository <repository_name>`: Validate token access, pull repository metadata, and store the tracked repo locally.
+- `mach clone <session_id>`: Pull/validate a session, fork it locally with a new session ID, and push only new fork steps later.
 - `mach config show|set`: View or update Mach configuration (e.g. `mach config set --db-enabled false`).
 - `mach enable` / `mach disable`: Globally toggle tracking without losing configuration.
 

@@ -395,6 +395,50 @@ class SessionStore:
             self._write_config(current)
             return current
 
+    # ── remote-format helpers ────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_remote(raw: dict[str, Any]) -> dict[str, Any]:
+        """Ensure the remote dict is in the canonical nested {git, mach} format.
+
+        Handles three cases transparently:
+          1. Already in new format  → strips any stale flat keys and returns clean dict.
+          2. Old flat format        → migrates url/repository_name → git,
+                                      all push-tracking fields → mach.
+          3. Empty / None           → returns a zeroed-out nested dict.
+        """
+        if not raw:
+            return {"git": {}, "mach": {}}
+
+        already_nested = "git" in raw or "mach" in raw
+
+        if already_nested:
+            # Accept the nested sub-dicts, drop any leftover flat keys.
+            return {
+                "git": dict(raw.get("git") or {}),
+                "mach": dict(raw.get("mach") or {}),
+            }
+
+        # Old flat format — split by concern.
+        return {
+            "git": {
+                "url": raw.get("url"),
+                "repository_name": raw.get("repository_name"),
+            },
+            "mach": {
+                "last_push_id": raw.get("last_push_id"),
+                "last_pushed_at": raw.get("last_pushed_at"),
+                "last_pushed_ts": raw.get("last_pushed_ts", 0),
+                "last_pushed_step_id": raw.get("last_pushed_step_id"),
+                "pushed_root": raw.get("pushed_root"),
+                "server_session_id": raw.get("server_session_id"),
+                "server_root_before": raw.get("server_root_before"),
+                "server_root_after": raw.get("server_root_after"),
+                "blobs_received": raw.get("blobs_received"),
+                "steps_received": raw.get("steps_received"),
+            },
+        }
+
     def update_push_state(
         self,
         session_id: str,
@@ -407,15 +451,13 @@ class SessionStore:
         self.init_repo()
         with file_lock(self.paths.lock_path):
             meta = self.read_session_meta(session_id)
-            remote = dict(meta.get("remote") or {})
+            # Normalize to nested format — migrates old flat meta.json files
+            # transparently on the first write after the refactor.
+            remote = self._normalize_remote(dict(meta.get("remote") or {}))
             if git_updates:
-                git = dict(remote.get("git") or {})
-                git.update(git_updates)
-                remote["git"] = git
+                remote["git"].update(git_updates)
             if mach_updates:
-                mach = dict(remote.get("mach") or {})
-                mach.update(mach_updates)
-                remote["mach"] = mach
+                remote["mach"].update(mach_updates)
             meta["remote"] = remote
             self._write_session_meta(meta)
             self._upsert_session_index(

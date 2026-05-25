@@ -10,7 +10,17 @@ from mach.db import connect, init_db, reset_db
 from mach.git_utils import current_branch, head_commit, remote_origin_url, repository_name
 from mach.locking import file_lock
 from mach.merkle import chain_hash, hash_payload
-from mach.models import RepositoryDetails
+from mach.models import (
+    FileChange,
+    GitRemoteInfo,
+    MachSyncState,
+    PullSessionDetails,
+    RemoteInfo,
+    RepositoryDetails,
+    SessionMeta,
+    Step,
+    ToolCall,
+)
 from mach.repository import resolve_paths
 from mach.utils import (
     append_jsonl,
@@ -85,40 +95,26 @@ class SessionStore:
         pre_commit = head_commit(self.paths.repo_root)
         self._check_concurrent_sessions(pre_commit)
 
-        meta = {
-            "id": session_id,
-            "started_at": int(time()),
-            "ended_at": None,
-            "agent": agent,
-            "branch": current_branch(self.paths.repo_root),
-            "remote": {
-                "git": {
-                    "url": remote_origin_url(self.paths.repo_root),
-                    "repository_name": repository_name(self.paths.repo_root),
-                },
-                "mach": {
-                    "last_push_id": None,
-                    "last_pushed_at": None,
-                    "last_pushed_ts": 0,
-                    "last_pushed_step_id": None,
-                    "pushed_root": None,
-                    "server_session_id": None,
-                    "server_root_before": None,
-                    "server_root_after": None,
-                    "blobs_received": None,
-                    "steps_received": None,
-                    "last_pulled_at": None,
-                    "last_pulled_ts": 0,
-                    "last_pulled_step_id": None,
-                },
-            },
-            "pre_commit": pre_commit,
-            "post_commit": None,
-            "task_desc": task_desc,
-            "status": "active",
-            "agent_session_id": agent_session_id,
-            "forked_from": None,
-        }
+        meta = SessionMeta(
+            id=session_id,
+            started_at=int(time()),
+            ended_at=None,
+            agent=agent,
+            branch=current_branch(self.paths.repo_root) or "main",
+            remote=RemoteInfo(
+                git=GitRemoteInfo(
+                    url=remote_origin_url(self.paths.repo_root),
+                    repository_name=repository_name(self.paths.repo_root),
+                ),
+                mach=MachSyncState(),
+            ),
+            pre_commit=pre_commit,
+            post_commit=None,
+            task_desc=task_desc,
+            status="active",
+            agent_session_id=agent_session_id,
+            forked_from=None,
+        ).to_dict()
         write_json(session_dir / "meta.json", meta)
         write_json(session_dir / "merkle.sig", {"root": None, "steps": 0})
         (session_dir / "steps.jsonl").touch()
@@ -553,6 +549,127 @@ class SessionStore:
                 "forked_from": source_session_id,
                 "remote": remote,
             })
+
+            root = None
+            for cloned in cloned_steps:
+                append_jsonl(clone_dir / "steps.jsonl", cloned)
+                root = chain_hash(cloned, root)
+            if not cloned_steps:
+                (clone_dir / "steps.jsonl").touch()
+            write_json(clone_dir / "meta.json", cloned_meta)
+            write_json(clone_dir / "merkle.sig", {"root": root, "steps": len(cloned_steps)})
+
+            self.paths.head_path.write_text(clone_id, encoding="utf-8")
+            self._upsert_session_index(
+                cloned_meta,
+                step_count=len(cloned_steps),
+                risk_count=sum(len(step.get("risk_flags", [])) for step in cloned_steps),
+            )
+            for cloned in cloned_steps:
+                self._insert_step(cloned)
+
+            return {
+                "cloned": True,
+                "session_id": clone_id,
+                "forked_from": source_session_id,
+                "step_count": len(cloned_steps),
+                "last_pulled_step_id": last_inherited_step_id,
+                "metadata": cloned_meta,
+            }
+
+    def clone_remote_session(
+        self,
+        source_session_id: str,
+        details: PullSessionDetails,
+        source_steps: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        self.init_repo()
+        with file_lock(self.paths.lock_path):
+            clone_id = f"ses_{uuid.uuid4().hex}"
+            clone_dir = self.paths.sessions_dir / clone_id
+            clone_dir.mkdir(parents=True, exist_ok=False)
+
+            now = int(time())
+            remote = RemoteInfo(
+                git=GitRemoteInfo(
+                    url=details.repository.remote_url or remote_origin_url(self.paths.repo_root),
+                    repository_name=details.repository.name or repository_name(self.paths.repo_root),
+                ),
+                mach=MachSyncState(
+                    server_session_id=details.id,
+                    server_root_after=details.merkle_root,
+                    last_pulled_at=details.synced_at or details.modified or details.created,
+                    last_pulled_ts=now,
+                ),
+            ).to_dict()
+
+            last_inherited_step_id: str | None = None
+            id_map: dict[str, str] = {}
+            cloned_steps: list[dict[str, Any]] = []
+
+            for index, step in enumerate(source_steps, start=1):
+                tool_data = step.get("tool")
+                fc_data = step.get("file_changes") or []
+                caused_by = list(step.get("caused_by") or [])
+                original_step_id = str(
+                    step.get("mach_id")
+                    or step.get("step_id")
+                    or step.get("id")
+                    or f"remote_step_{index}"
+                )
+                cloned_step_id = f"step_{uuid.uuid4().hex}"
+                id_map[original_step_id] = cloned_step_id
+
+                cloned = Step(
+                    id=cloned_step_id,
+                    session_id=clone_id,
+                    step_num=index,
+                    ts=int(step.get("ts") or step.get("timestamp") or now),
+                    type=step.get("type") or step.get("step_type") or "output",
+                    content_hash=step.get("content_hash"),
+                    content=step.get("content"),
+                    caused_by=[],
+                    risk_level=step.get("risk_level") or "none",
+                    tool=ToolCall.from_dict(tool_data) if isinstance(tool_data, dict) else None,
+                    file_changes=[FileChange.from_dict(fc) for fc in fc_data],
+                    commit_hash=step.get("commit_hash"),
+                ).to_dict()
+                cloned["_original_caused_by"] = caused_by
+                cloned_steps.append(cloned)
+                last_inherited_step_id = cloned_step_id
+
+            for cloned in cloned_steps:
+                caused_by = cloned.pop("_original_caused_by", [])
+                mapped = [id_map.get(step_id, step_id) for step_id in caused_by if step_id]
+                if not mapped and cloned["step_num"] > 1:
+                    mapped = [cloned_steps[cloned["step_num"] - 2]["id"]]
+                cloned["caused_by"] = mapped
+
+            mach_state = remote.setdefault("mach", {})
+            mach_state.update({
+                "last_pushed_step_id": last_inherited_step_id,
+                "last_pushed_ts": now if last_inherited_step_id else 0,
+                "last_pulled_step_id": last_inherited_step_id,
+                "last_pulled_ts": now if last_inherited_step_id else 0,
+                "last_pulled_at": details.synced_at or details.modified or details.created or str(now),
+                "forked_from_session_id": source_session_id,
+                "forked_from_root": details.merkle_root,
+            })
+
+            cloned_meta = SessionMeta(
+                id=clone_id,
+                started_at=now,
+                ended_at=None,
+                agent=details.agent_name or "unknown",
+                branch=current_branch(self.paths.repo_root) or details.branch or "main",
+                remote=RemoteInfo.from_dict(remote),
+                pre_commit=head_commit(self.paths.repo_root),
+                post_commit=None,
+                task_desc=details.task_desc,
+                status="active",
+                agent_session_id=details.agent_session_id,
+                forked_from=source_session_id,
+            ).to_dict()
 
             root = None
             for cloned in cloned_steps:

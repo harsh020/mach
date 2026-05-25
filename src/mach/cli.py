@@ -380,6 +380,42 @@ def _pull_session_details(store: SessionStore, session_id: str, token: str) -> P
     return details
 
 
+def _pull_remote_session_steps(store: SessionStore, session_id: str, token: str) -> list[dict]:
+    base_url = _api_base_url(store)
+    steps_base = f"{base_url}/api/v1/sessions/{urllib.parse.quote(session_id, safe='')}/steps"
+    page_size = 50
+    page = 1
+    steps: list[dict] = []
+
+    while True:
+        url = f"{steps_base}?steps_after=0&size={page_size}&page={page}"
+        data = _read_api_json(
+            _auth_request(url, token),
+            f"pulling steps for session {session_id}",
+        )
+
+        if isinstance(data, list):
+            raw_steps = data
+            has_next = False
+        else:
+            raw_steps = data.get("results") or data.get("steps") or []
+            has_next = bool(data.get("next"))
+
+        steps.extend(raw_steps)
+        fetched = len(steps)
+        total = data.get("count") if isinstance(data, dict) else None
+        total_str = f"/{total}" if total is not None else ""
+        sys.stdout.write(f"\r  Pulling remote steps: {fetched}{total_str}")
+        sys.stdout.flush()
+
+        if not has_next or not raw_steps:
+            break
+        page += 1
+
+    print()
+    return steps
+
+
 def _require_tracked_repository(store: SessionStore) -> RepositoryDetails:
     repository = store.read_tracked_repo()
     if not repository:
@@ -720,9 +756,9 @@ def clone_command(args: argparse.Namespace) -> None:
             print(f"  {mismatch}", file=sys.stderr)
         sys.exit(1)
 
-    __pull_command(argparse.Namespace(repository=None, session=source_session_id, session_id=None))
-
-    result = store.clone_session(source_session_id)
+    print(f"Pulling remote session {source_session_id}...")
+    remote_steps = _pull_remote_session_steps(store, source_session_id, token)
+    result = store.clone_remote_session(source_session_id, session_details, remote_steps)
     print(f"Success: Cloned session {source_session_id}.")
     print(f"  New session: {result['session_id']}")
     print(f"  Forked from: {result['forked_from']}")

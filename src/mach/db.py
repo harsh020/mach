@@ -26,6 +26,7 @@ def init_db(db_path: Path) -> None:
               post_commit TEXT,
               step_count INTEGER DEFAULT 0,
               risk_count INTEGER DEFAULT 0,
+              forked_from TEXT,
               synced_at INTEGER
             );
 
@@ -79,6 +80,10 @@ def init_db(db_path: Path) -> None:
         )
         try:
             conn.execute("ALTER TABLE sessions ADD COLUMN agent_session_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN forked_from TEXT")
         except sqlite3.OperationalError:
             pass
 

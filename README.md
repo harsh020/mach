@@ -68,6 +68,12 @@ mach init
 
 # Or bypass the interactive prompts for CI/CD
 mach init --hook-agents claude,codex,gemini --store-content input,output,reasoning,tool
+
+# Pull repository metadata and make that repo the local trust boundary
+mach pull --repository my-repo
+
+# Clone an existing session into a new local fork after repository trust is set
+mach clone ses_123
 ```
 
 ### The TUI Dashboard
@@ -111,10 +117,30 @@ mach config set --use-tui false
 | `poll_interval_sec`| `2` | How often the background daemon checks the inbox. |
 | `store_content` | `["input", "output", "reasoning", "tool"]` | Step types to actively capture and store as blob data. |
 
+## 🔐 Repository Trust Boundary
+
+Mach treats the repository as the trust boundary for remote operations.
+
+Before cloning a remote session, pull and validate the repository metadata:
+
+```bash
+mach pull --repository <repository_name>
+```
+
+This validates your auth token, fetches repository details from Mach Web, checks that the pulled repository matches the current Git checkout by name and remote URL when available, then stores the details locally in `.mach/tracked_repo.json`.
+
+To clone a session:
+
+```bash
+mach clone <session_id>
+```
+
 ## 💻 Command Reference
 
 ### Setup & Configuration
 - `mach init`: Bootstrap the repository, interactively select hooks and stored content types, and start the daemon.
+- `mach pull --repository <repository_name>`: Validate token access, confirm the remote repository matches this Git checkout, and store the tracked repo locally.
+- `mach clone <session_id>`: Validate the session belongs to the tracked repository, pull its step state, fork it locally with a new session ID, and push only new fork steps later.
 - `mach config show|set`: View or update Mach configuration (e.g. `mach config set --db-enabled false`).
 - `mach enable` / `mach disable`: Globally toggle tracking without losing configuration.
 

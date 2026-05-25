@@ -40,4 +40,5 @@ def resolve_paths(repo_root: Path | None = None) -> MachPaths:
         tracker_pid_path=mach_dir / "tracker.pid",
         tracker_log_path=mach_dir / "tracker.log",
         tracker_lock_path=mach_dir / ".tracker.lock",
+        tracked_repo_path=mach_dir / "tracked_repo.json",
     )

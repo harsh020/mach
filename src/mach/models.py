@@ -26,6 +26,7 @@ class MachPaths:
     tracker_pid_path: Path
     tracker_log_path: Path
     tracker_lock_path: Path
+    tracked_repo_path: Path
 
 @dataclass
 class FileChange:
@@ -138,6 +139,9 @@ class MachSyncState:
     server_root_after: Optional[str] = None
     blobs_received: Optional[int] = None
     steps_received: Optional[int] = None
+    last_pulled_at: Optional[str] = None
+    last_pulled_ts: int = 0
+    last_pulled_step_id: Optional[str] = None
 
     def reset(self) -> "MachSyncState":
         """Return a clean MachSyncState (forces a full re-push next time)."""
@@ -159,6 +163,9 @@ class MachSyncState:
             server_root_after=data.get("server_root_after"),
             blobs_received=data.get("blobs_received"),
             steps_received=data.get("steps_received"),
+            last_pulled_at=data.get("last_pulled_at"),
+            last_pulled_ts=data.get("last_pulled_ts", 0),
+            last_pulled_step_id=data.get("last_pulled_step_id"),
         )
 
 
@@ -187,6 +194,44 @@ class RemoteInfo:
             mach=MachSyncState.from_dict(data.get("mach") or {}),
         )
 
+
+@dataclass
+class RepositoryDetails:
+    id: str
+    name: str
+    remote_url: Optional[str] = None
+    provider: Optional[str] = None
+    external_id: Optional[str] = None
+    default_branch: Optional[str] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    is_active: bool = True
+    created: Optional[str] = None
+    modified: Optional[str] = None
+    pulled_at: Optional[int] = None
+    api_base_url: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RepositoryDetails":
+        raw = data.get("repo") if isinstance(data.get("repo"), dict) else data
+        return cls(
+            id=str(raw.get("id") or ""),
+            name=str(raw.get("name") or data.get("repository_name") or ""),
+            remote_url=raw.get("remote_url"),
+            provider=raw.get("provider"),
+            external_id=raw.get("external_id"),
+            default_branch=raw.get("default_branch"),
+            metadata=raw.get("metadata") or {},
+            is_active=raw.get("is_active", True),
+            created=raw.get("created"),
+            modified=raw.get("modified"),
+            pulled_at=data.get("pulled_at") or data.get("fetched_at"),
+            api_base_url=data.get("api_base_url"),
+        )
+
+
 @dataclass
 class SessionMeta:
     id: str
@@ -201,6 +246,7 @@ class SessionMeta:
     post_commit: Optional[str] = None
     step_count: int = 0
     risk_count: int = 0
+    forked_from: Optional[str] = None
     remote: Optional[RemoteInfo] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -224,6 +270,7 @@ class SessionMeta:
             post_commit=data.get("post_commit"),
             step_count=data.get("step_count", 0),
             risk_count=data.get("risk_count", 0),
+            forked_from=data.get("forked_from"),
             remote=RemoteInfo.from_dict(data["remote"]) if "remote" in data else None
         )
 
@@ -318,6 +365,59 @@ class PushResponse:
 
 
 @dataclass
+class PullSessionDetails:
+    id: Optional[str]
+    session_id: str
+    agent_name: Optional[str]
+    agent_session_id: Optional[str]
+    task_desc: Optional[str]
+    repository: RepositoryDetails
+    branch: Optional[str]
+    pre_commit: Optional[str]
+    post_commit: Optional[str]
+    status: Optional[str]
+    started_at: Optional[int]
+    ended_at: Optional[int]
+    merkle_root: Optional[str]
+    merkle_steps: Optional[int]
+    step_count: int
+    risk_count: int
+    last_step: dict[str, Any] | None = None
+    synced_at: Optional[str] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    is_active: bool = True
+    created: Optional[str] = None
+    modified: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PullSessionDetails":
+        return cls(
+            id=data.get("id"),
+            session_id=str(data.get("session_id") or ""),
+            agent_name=data.get("agent_name"),
+            agent_session_id=data.get("agent_session_id"),
+            task_desc=data.get("task_desc"),
+            repository=RepositoryDetails.from_dict(data.get("repository") or {}),
+            branch=data.get("branch"),
+            pre_commit=data.get("pre_commit"),
+            post_commit=data.get("post_commit"),
+            status=data.get("status"),
+            started_at=data.get("started_at"),
+            ended_at=data.get("ended_at"),
+            merkle_root=data.get("merkle_root"),
+            merkle_steps=data.get("merkle_steps"),
+            step_count=int(data.get("step_count") or 0),
+            risk_count=int(data.get("risk_count") or 0),
+            last_step=data.get("last_step"),
+            synced_at=data.get("synced_at"),
+            metadata=data.get("metadata") or {},
+            is_active=data.get("is_active", True),
+            created=data.get("created"),
+            modified=data.get("modified"),
+        )
+
+
+@dataclass
 class PullStepRecord:
     """A single step record as returned by the server's step-listing endpoint."""
     server_id: Optional[str]    # server's own UUID for this push record
@@ -358,4 +458,3 @@ class PullStepsPage:
             size=size,
             has_next=bool(data.get("next")),
         )
-

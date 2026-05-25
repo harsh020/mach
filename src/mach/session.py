@@ -10,6 +10,7 @@ from mach.db import connect, init_db, reset_db
 from mach.git_utils import current_branch, head_commit, remote_origin_url, repository_name
 from mach.locking import file_lock
 from mach.merkle import chain_hash, hash_payload
+from mach.models import RepositoryDetails
 from mach.repository import resolve_paths
 from mach.utils import (
     append_jsonl,
@@ -106,6 +107,9 @@ class SessionStore:
                     "server_root_after": None,
                     "blobs_received": None,
                     "steps_received": None,
+                    "last_pulled_at": None,
+                    "last_pulled_ts": 0,
+                    "last_pulled_step_id": None,
                 },
             },
             "pre_commit": pre_commit,
@@ -113,6 +117,7 @@ class SessionStore:
             "task_desc": task_desc,
             "status": "active",
             "agent_session_id": agent_session_id,
+            "forked_from": None,
         }
         write_json(session_dir / "meta.json", meta)
         write_json(session_dir / "merkle.sig", {"root": None, "steps": 0})
@@ -238,7 +243,7 @@ class SessionStore:
                 rows = conn.execute(
                     """
                     SELECT id, started_at, ended_at, agent, agent_session_id, branch, pre_commit, post_commit,
-                           step_count, risk_count, synced_at
+                           step_count, risk_count, forked_from, synced_at
                     FROM sessions
                     ORDER BY started_at DESC
                     """
@@ -395,6 +400,18 @@ class SessionStore:
             self._write_config(current)
             return current
 
+    def read_tracked_repo(self) -> RepositoryDetails | None:
+        self.init_repo()
+        if not self.paths.tracked_repo_path.exists():
+            return None
+        return RepositoryDetails.from_dict(read_json(self.paths.tracked_repo_path))
+
+    def write_tracked_repo(self, repository: RepositoryDetails) -> RepositoryDetails:
+        self.init_repo()
+        with file_lock(self.paths.lock_path):
+            write_json(self.paths.tracked_repo_path, repository.to_dict())
+            return repository
+
     # ── remote-format helpers ────────────────────────────────────────────────
 
     @staticmethod
@@ -436,6 +453,9 @@ class SessionStore:
                 "server_root_after": raw.get("server_root_after"),
                 "blobs_received": raw.get("blobs_received"),
                 "steps_received": raw.get("steps_received"),
+                "last_pulled_at": raw.get("last_pulled_at"),
+                "last_pulled_ts": raw.get("last_pulled_ts", 0),
+                "last_pulled_step_id": raw.get("last_pulled_step_id"),
             },
         }
 
@@ -466,6 +486,100 @@ class SessionStore:
                 risk_count=risk_count if risk_count is not None else self._risk_count(session_id),
             )
             return meta
+
+    def clone_session(self, source_session_id: str) -> dict[str, Any]:
+        self.init_repo()
+        with file_lock(self.paths.lock_path):
+            source_dir = self.paths.sessions_dir / source_session_id
+            if not source_dir.exists():
+                raise MachError(f"Unknown session: {source_session_id}")
+
+            source_meta = self.read_session_meta(source_session_id)
+            source_steps = read_jsonl(source_dir / "steps.jsonl")
+            source_merkle = read_json(source_dir / "merkle.sig")
+
+            clone_id = f"ses_{uuid.uuid4().hex}"
+            clone_dir = self.paths.sessions_dir / clone_id
+            clone_dir.mkdir(parents=True, exist_ok=False)
+
+            now = int(time())
+            remote = self._normalize_remote(dict(source_meta.get("remote") or {}))
+            last_inherited_step_id: str | None = None
+            id_map: dict[str, str] = {}
+            cloned_steps: list[dict[str, Any]] = []
+
+            for index, step in enumerate(source_steps, start=1):
+                cloned = dict(step)
+                original_step_id = str(cloned.get("id") or "")
+                cloned_step_id = f"step_{uuid.uuid4().hex}"
+                if original_step_id:
+                    id_map[original_step_id] = cloned_step_id
+
+                original_causes = list(cloned.get("caused_by") or [])
+                cloned["id"] = cloned_step_id
+                cloned["session_id"] = clone_id
+                cloned["step_num"] = index
+                cloned["_original_caused_by"] = original_causes
+                cloned_steps.append(cloned)
+                last_inherited_step_id = cloned_step_id
+
+            for cloned in cloned_steps:
+                caused_by = cloned.pop("_original_caused_by", [])
+                mapped = [id_map.get(step_id, step_id) for step_id in caused_by if step_id]
+                if not mapped and cloned["step_num"] > 1:
+                    mapped = [cloned_steps[cloned["step_num"] - 2]["id"]]
+                cloned["caused_by"] = mapped
+
+            mach_state = remote.setdefault("mach", {})
+            mach_state.update({
+                "last_pushed_step_id": last_inherited_step_id,
+                "last_pushed_ts": now if last_inherited_step_id else 0,
+                "last_pulled_step_id": last_inherited_step_id,
+                "last_pulled_ts": now if last_inherited_step_id else 0,
+                "last_pulled_at": str(now) if last_inherited_step_id else None,
+                "forked_from_session_id": source_session_id,
+                "forked_from_root": source_merkle.get("root"),
+            })
+
+            cloned_meta = dict(source_meta)
+            cloned_meta.update({
+                "id": clone_id,
+                "started_at": now,
+                "ended_at": None,
+                "status": "active",
+                "branch": current_branch(self.paths.repo_root),
+                "pre_commit": head_commit(self.paths.repo_root),
+                "post_commit": None,
+                "forked_from": source_session_id,
+                "remote": remote,
+            })
+
+            root = None
+            for cloned in cloned_steps:
+                append_jsonl(clone_dir / "steps.jsonl", cloned)
+                root = chain_hash(cloned, root)
+            if not cloned_steps:
+                (clone_dir / "steps.jsonl").touch()
+            write_json(clone_dir / "meta.json", cloned_meta)
+            write_json(clone_dir / "merkle.sig", {"root": root, "steps": len(cloned_steps)})
+
+            self.paths.head_path.write_text(clone_id, encoding="utf-8")
+            self._upsert_session_index(
+                cloned_meta,
+                step_count=len(cloned_steps),
+                risk_count=sum(len(step.get("risk_flags", [])) for step in cloned_steps),
+            )
+            for cloned in cloned_steps:
+                self._insert_step(cloned)
+
+            return {
+                "cloned": True,
+                "session_id": clone_id,
+                "forked_from": source_session_id,
+                "step_count": len(cloned_steps),
+                "last_pulled_step_id": last_inherited_step_id,
+                "metadata": cloned_meta,
+            }
 
     def fsck(self) -> dict[str, Any]:
         self.init_repo()
@@ -680,8 +794,8 @@ class SessionStore:
                 """
                 INSERT INTO sessions (
                   id, started_at, ended_at, agent, branch, pre_commit, post_commit,
-                  step_count, risk_count, synced_at, agent_session_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  step_count, risk_count, forked_from, synced_at, agent_session_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   started_at=excluded.started_at,
                   ended_at=excluded.ended_at,
@@ -691,6 +805,7 @@ class SessionStore:
                   post_commit=excluded.post_commit,
                   step_count=excluded.step_count,
                   risk_count=excluded.risk_count,
+                  forked_from=excluded.forked_from,
                   synced_at=excluded.synced_at,
                   agent_session_id=excluded.agent_session_id
                 """,
@@ -704,6 +819,7 @@ class SessionStore:
                     meta["post_commit"],
                     step_count,
                     risk_count,
+                    meta.get("forked_from"),
                     (meta.get("remote") or {}).get("mach", {}).get("last_pushed_ts"),
                     meta.get("agent_session_id"),
                 ),

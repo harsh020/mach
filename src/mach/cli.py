@@ -1478,7 +1478,7 @@ def main() -> None:
     pull_parser.add_argument("repository_name", nargs="?", help="The name of the repository to pull.")
     pull_parser.add_argument("-r", "--repository", metavar="repository_name", help="Repository name to track as the trust boundary.")
     pull_parser.add_argument("-s", "--session", help="The ID of the session to check.")
-    pull_parser.set_defaults(handler=pull_command)
+    pull_parser.set_defaults(handler=pull_command, repository=None, repository_name=None, session=None, session_id=None)
 
     clone_parser = subparsers.add_parser("clone", help="Clone a pulled session into a new local fork.")
     clone_parser.add_argument("session_id", help="The session ID to clone.")

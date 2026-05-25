@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 from pathlib import Path
 from time import time
@@ -232,21 +233,33 @@ class SessionStore:
             results.append(self.verify_session(session_id))
         return results
 
+    def _is_valid_session_id(self, session_id: str) -> bool:
+        return session_id.startswith("ses_") and len(session_id) == 36
+
     def list_sessions(self) -> list[dict[str, Any]]:
         self.init_repo()
-        try:
-            with connect(self.paths.db_path) as conn:
-                rows = conn.execute(
-                    """
-                    SELECT id, started_at, ended_at, agent, agent_session_id, branch, pre_commit, post_commit,
-                           step_count, risk_count, forked_from, synced_at
-                    FROM sessions
-                    ORDER BY started_at DESC
-                    """
-                ).fetchall()
-            return [dict(row) for row in rows]
-        except Exception:
-            return []
+
+        sessions = []
+        for session in os.scandir(self.paths.sessions_dir):
+            if self._is_valid_session_id(session.name):
+                # sessions.append(SessionMeta.from_dict(self.read_session_meta(session.name))) # TODO: Use dataclasses for data access
+                sessions.append(self.read_session_meta(session.name))
+
+        return sessions
+
+        # try:
+        #     with connect(self.paths.db_path) as conn:
+        #         rows = conn.execute(
+        #             """
+        #             SELECT id, started_at, ended_at, agent, agent_session_id, branch, pre_commit, post_commit,
+        #                    step_count, risk_count, forked_from, synced_at
+        #             FROM sessions
+        #             ORDER BY started_at DESC
+        #             """
+        #         ).fetchall()
+        #     return [dict(row) for row in rows]
+        # except Exception:
+        #     return []
 
     def show_session(self, session_id: str | None = None) -> dict[str, Any]:
         self.init_repo()

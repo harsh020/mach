@@ -474,9 +474,24 @@ def push_command(args: argparse.Namespace) -> None:
         remote = meta.get("remote", {})
         git_info = remote.get("git") or {}
         mach_state = remote.get("mach") or {}
-        # remote_url = git_info.get("url") or remote_origin_url(store.paths.repo_root)
-        remote_url = git_info.get("url")
-        repository_label = git_info.get("repository_name") or repository_name(store.paths.repo_root)
+        current_remote_url = remote_origin_url(store.paths.repo_root)
+        current_repository_label = repository_name(store.paths.repo_root) if current_remote_url else None
+        remote_url = current_remote_url or git_info.get("url")
+        repository_label = current_repository_label or git_info.get("repository_name") or repository_name(store.paths.repo_root)
+        if remote_url != git_info.get("url") or repository_label != git_info.get("repository_name"):
+            store.update_push_state(
+                session_id,
+                git_updates={
+                    "url": remote_url,
+                    "repository_name": repository_label,
+                },
+            )
+            meta = store.read_session_meta(session_id)
+            remote = meta.get("remote", {})
+            git_info = remote.get("git") or {}
+            mach_state = remote.get("mach") or {}
+            remote_url = git_info.get("url")
+            repository_label = git_info.get("repository_name")
         print(f"  Repository: {repository_label}")
         print("  Calculating Merkle deltas...")
 

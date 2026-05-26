@@ -1233,10 +1233,36 @@ def fsck_command(_: argparse.Namespace) -> None:
 def internal_fix_command(args: argparse.Namespace) -> None:
     store = SessionStore()
     result = store.fix_sessions(session_id=args.session_id, apply=args.apply)
-    payload = {"fix": result}
+    action = "Applied" if args.apply else "Checked"
+    target = args.session_id or "all sessions"
+    print(f"{action} ledger fixes for {target}.")
+    print(f"  Sessions checked: {result['sessions_checked']}")
+    print(f"  Sessions changed: {result['sessions_changed']}")
+    print(f"  Steps merged: {result['merged_steps']}")
+    print(f"  Tool hashes normalized: {result['normalized_tool_hashes']}")
+
+    changed_results = [item for item in result["results"] if item.get("changed")]
+    for item in changed_results[:5]:
+        print(
+            f"  {item['session_id']}: "
+            f"{item['before_steps']} -> {item['after_steps']} steps, "
+            f"merged {item['merged_steps']}, "
+            f"tool hashes {item['normalized_tool_hashes']}"
+        )
+    if len(changed_results) > 5:
+        print(f"  ... {len(changed_results) - 5} more changed session(s)")
+
     if args.apply:
-        payload["fsck"] = store.fsck()
-    emit(payload)
+        fsck = store.fsck()
+        print("  Rebuilt SQLite index.")
+        print(f"  Sessions rebuilt: {fsck['sessions_rebuilt']}")
+        print(f"  Steps rebuilt: {fsck['steps_rebuilt']}")
+        if not fsck.get("ok"):
+            print("Error: Ledger verification failed after applying fixes.", file=sys.stderr)
+            sys.exit(1)
+        print("Success: Ledger fixes applied.")
+    else:
+        print("Success: Dry run complete. Use `mach fix --apply` to rewrite ledgers.")
 
 
 def rewind_command(args: argparse.Namespace) -> None:

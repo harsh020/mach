@@ -595,6 +595,7 @@ class SessionStore:
         source_session_id: str,
         details: PullSessionDetails,
         source_steps: list[dict[str, Any]],
+        source_blobs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self.init_repo()
         with file_lock(self.paths.lock_path):
@@ -619,6 +620,7 @@ class SessionStore:
             last_inherited_step_id: str | None = None
             id_map: dict[str, str] = {}
             cloned_steps: list[dict[str, Any]] = []
+            blob_count = self._write_remote_blobs_unlocked(source_blobs or [])
 
             for index, step in enumerate(source_steps, start=1):
                 tool_data = step.get("tool")
@@ -707,9 +709,21 @@ class SessionStore:
                 "session_id": clone_id,
                 "forked_from": source_session_id,
                 "step_count": len(cloned_steps),
+                "blob_count": blob_count,
                 "last_pulled_step_id": last_inherited_step_id,
                 "metadata": cloned_meta,
             }
+
+    def _write_remote_blobs_unlocked(self, blobs: list[dict[str, Any]]) -> int:
+        written = 0
+        for blob in blobs:
+            content_hash = blob.get("content_hash")
+            content = blob.get("content")
+            if not content_hash or content is None:
+                continue
+            self._write_blob(str(content_hash), str(content))
+            written += 1
+        return written
 
     def fsck(self) -> dict[str, Any]:
         self.init_repo()
@@ -758,8 +772,160 @@ class SessionStore:
                 "verification": verification,
             }
 
+    def fix_sessions(self, session_id: str | None = None, *, apply: bool = False) -> dict[str, Any]:
+        self.init_repo()
+        with file_lock(self.paths.lock_path):
+            session_ids = [session_id] if session_id else self._session_ids()
+            results = []
+            for sid in session_ids:
+                session_dir = self.paths.sessions_dir / sid
+                if not session_dir.exists():
+                    raise MachError(f"Unknown session: {sid}")
+                results.append(self._fix_session_chunks_unlocked(sid, apply=apply))
+            return {
+                "applied": apply,
+                "sessions_checked": len(results),
+                "sessions_changed": sum(1 for item in results if item["changed"]),
+                "merged_steps": sum(item["merged_steps"] for item in results),
+                "normalized_tool_hashes": sum(item["normalized_tool_hashes"] for item in results),
+                "results": results,
+            }
+
     def read_session_meta(self, session_id: str) -> dict[str, Any]:
         return read_json(self.paths.sessions_dir / session_id / "meta.json")
+
+    def _fix_session_chunks_unlocked(self, session_id: str, *, apply: bool) -> dict[str, Any]:
+        session_dir = self.paths.sessions_dir / session_id
+        steps = read_jsonl(session_dir / "steps.jsonl")
+        normalized, id_map, merged_steps, normalized_tool_hashes = self._normalize_steps(steps)
+        changed = merged_steps > 0 or normalized_tool_hashes > 0
+
+        if apply and changed:
+            self._write_normalized_session_unlocked(session_id, normalized, id_map)
+
+        return {
+            "session_id": session_id,
+            "before_steps": len(steps),
+            "after_steps": len(normalized),
+            "merged_steps": merged_steps,
+            "normalized_tool_hashes": normalized_tool_hashes,
+            "changed": changed,
+        }
+
+    def _normalize_steps(self, steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str], int, int]:
+        mergeable_types = {"input", "reasoning", "output"}
+        normalized: list[dict[str, Any]] = []
+        id_map: dict[str, str] = {}
+        merged_steps = 0
+        normalized_tool_hashes = 0
+
+        for step in steps:
+            current = dict(step)
+            if self._normalize_tool_step_hash(current):
+                normalized_tool_hashes += 1
+            current_id = str(current.get("id") or "")
+            if current_id:
+                id_map[current_id] = current_id
+
+            if (
+                normalized
+                and self._can_merge_step_chunks(normalized[-1], current, mergeable_types)
+            ):
+                target = normalized[-1]
+                target_id = str(target.get("id") or "")
+                if current_id and target_id:
+                    id_map[current_id] = target_id
+                target["_merged_content"] = self._step_text(target) + self._step_text(current)
+                target.setdefault("_merged_from", []).append(current_id)
+                merged_steps += 1
+                continue
+
+            normalized.append(current)
+
+        for index, step in enumerate(normalized, start=1):
+            step["step_num"] = index
+            caused_by = []
+            for cause in step.get("caused_by") or []:
+                mapped = id_map.get(cause, cause)
+                if mapped and mapped != step.get("id") and mapped not in caused_by:
+                    caused_by.append(mapped)
+            step["caused_by"] = caused_by
+
+        return normalized, id_map, merged_steps, normalized_tool_hashes
+
+    def _normalize_tool_step_hash(self, step: dict[str, Any]) -> bool:
+        tool = step.get("tool")
+        if step.get("type") != "tool" or not isinstance(tool, dict):
+            return False
+
+        tool_hash = tool.get("content_hash")
+        tool_content = tool.get("content")
+        if not tool_hash and tool_content is not None:
+            tool_hash = hash_payload({"content": str(tool_content)})
+            tool["content_hash"] = tool_hash
+
+        if not tool_hash or step.get("content_hash") == tool_hash:
+            return False
+
+        step["content_hash"] = tool_hash
+        step.pop("content", None)
+        return True
+
+    def _can_merge_step_chunks(self, previous: dict[str, Any], current: dict[str, Any], mergeable_types: set[str]) -> bool:
+        step_type = previous.get("type")
+        if step_type != current.get("type") or step_type not in mergeable_types:
+            return False
+        blocked_fields = ("tool", "file_changes", "risk_flags")
+        return not any(previous.get(field) or current.get(field) for field in blocked_fields)
+
+    def _step_text(self, step: dict[str, Any]) -> str:
+        if "_merged_content" in step:
+            return str(step.get("_merged_content") or "")
+        if step.get("content") is not None:
+            return str(step.get("content") or "")
+        blob = self._read_blob(step.get("content_hash"))
+        return blob or ""
+
+    def _write_normalized_session_unlocked(
+        self,
+        session_id: str,
+        steps: list[dict[str, Any]],
+        id_map: dict[str, str],
+    ) -> None:
+        session_dir = self.paths.sessions_dir / session_id
+        steps_path = session_dir / "steps.jsonl"
+        merkle_path = session_dir / "merkle.sig"
+        meta = self.read_session_meta(session_id)
+        config = self.read_config()
+        store_content = config.get("store_content", ["input", "output", "reasoning", "tool"])
+
+        root = None
+        steps_path.write_text("", encoding="utf-8")
+        for step in steps:
+            content = step.pop("_merged_content", None)
+            step.pop("_merged_from", None)
+            if content is not None:
+                content_hash = hash_payload({"content": content})
+                step["content_hash"] = content_hash
+                if step.get("type") == "system_action":
+                    step["content"] = content
+                else:
+                    step.pop("content", None)
+                    if step.get("type") in store_content:
+                        self._write_blob(content_hash, content)
+
+            append_jsonl(steps_path, step)
+            root = chain_hash(step, root)
+
+        remote = self._normalize_remote(dict(meta.get("remote") or {}))
+        mach = remote.setdefault("mach", {})
+        for key in ("last_pushed_step_id", "last_pulled_step_id"):
+            value = mach.get(key)
+            if value in id_map:
+                mach[key] = id_map[value]
+        meta["remote"] = remote
+        self._write_session_meta(meta)
+        write_json(merkle_path, {"root": root, "steps": len(steps)})
 
     def _write_config(self, config: dict[str, Any]) -> None:
         write_json(self.paths.config_path, config)
@@ -840,6 +1006,10 @@ class SessionStore:
         ts = step_dict.get("ts", int(time()))
         step_type = step_dict.get("type", "output")
         raw_content = step_dict.get("content", "")
+        raw_t_content = ""
+        if step_type == "tool" and isinstance(step_dict.get("tool"), dict):
+            raw_t_content = str(step_dict["tool"].get("content") or "")
+            raw_content = raw_t_content or raw_content
         content_hash = hash_payload({"content": raw_content})
 
         final_content = None
@@ -854,8 +1024,8 @@ class SessionStore:
         tool_obj = None
         if "tool" in step_dict:
             t = dict(step_dict["tool"])
-            raw_t_content = t.get("content", "")
-            t_content_hash = hash_payload({"content": raw_t_content})
+            raw_t_content = str(t.get("content") or "")
+            t_content_hash = content_hash if step_type == "tool" else hash_payload({"content": raw_t_content})
             
             if "tool" in store_content and raw_t_content:
                 self._write_blob(t_content_hash, raw_t_content)

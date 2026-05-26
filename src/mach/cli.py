@@ -416,6 +416,42 @@ def _pull_remote_session_steps(store: SessionStore, session_id: str, token: str)
     return steps
 
 
+def _pull_remote_session_blobs(store: SessionStore, session_id: str, token: str) -> list[dict]:
+    base_url = _api_base_url(store)
+    blobs_base = f"{base_url}/api/v1/sessions/{urllib.parse.quote(session_id, safe='')}/blobs"
+    page_size = 50
+    page = 1
+    blobs: list[dict] = []
+
+    while True:
+        url = f"{blobs_base}?size={page_size}&page={page}"
+        data = _read_api_json(
+            _auth_request(url, token),
+            f"pulling blobs for session {session_id}",
+        )
+
+        if isinstance(data, list):
+            raw_blobs = data
+            has_next = False
+        else:
+            raw_blobs = data.get("results") or data.get("blobs") or []
+            has_next = bool(data.get("next"))
+
+        blobs.extend(raw_blobs)
+        fetched = len(blobs)
+        total = data.get("count") if isinstance(data, dict) else None
+        total_str = f"/{total}" if total is not None else ""
+        sys.stdout.write(f"\r  Pulling remote blobs: {fetched}{total_str}")
+        sys.stdout.flush()
+
+        if not has_next or not raw_blobs:
+            break
+        page += 1
+
+    print()
+    return blobs
+
+
 def _require_tracked_repository(store: SessionStore) -> RepositoryDetails:
     repository = store.read_tracked_repo()
     if not repository:
@@ -758,11 +794,13 @@ def clone_command(args: argparse.Namespace) -> None:
 
     print(f"Pulling remote session {source_session_id}...")
     remote_steps = _pull_remote_session_steps(store, source_session_id, token)
-    result = store.clone_remote_session(source_session_id, session_details, remote_steps)
+    remote_blobs = _pull_remote_session_blobs(store, source_session_id, token)
+    result = store.clone_remote_session(source_session_id, session_details, remote_steps, remote_blobs)
     print(f"Success: Cloned session {source_session_id}.")
     print(f"  New session: {result['session_id']}")
     print(f"  Forked from: {result['forked_from']}")
     print(f"  Inherited steps: {result['step_count']}")
+    print(f"  Blobs pulled: {result['blob_count']}")
     if result.get("last_pulled_step_id"):
         print(f"  Push cursor: {result['last_pulled_step_id']}")
 
@@ -1192,6 +1230,15 @@ def fsck_command(_: argparse.Namespace) -> None:
     emit(store.fsck())
 
 
+def internal_fix_command(args: argparse.Namespace) -> None:
+    store = SessionStore()
+    result = store.fix_sessions(session_id=args.session_id, apply=args.apply)
+    payload = {"fix": result}
+    if args.apply:
+        payload["fsck"] = store.fsck()
+    emit(payload)
+
+
 def rewind_command(args: argparse.Namespace) -> None:
     store = SessionStore()
     emit(store.rewind(target=args.target))
@@ -1379,6 +1426,11 @@ def main() -> None:
 
     fsck_parser = subparsers.add_parser("fsck", help="Rebuild the SQLite index from JSONL logs.")
     fsck_parser.set_defaults(handler=fsck_command)
+
+    fix_parser = subparsers.add_parser("fix", help="Normalize session ledgers.")
+    fix_parser.add_argument("session_id", nargs="?")
+    fix_parser.add_argument("--apply", action="store_true", help="Rewrite session ledgers. Without this, only report changes.")
+    fix_parser.set_defaults(handler=internal_fix_command)
 
     rewind_parser = subparsers.add_parser("rewind", help="Rewind workspace to target commit in append-only mode.")
     rewind_parser.add_argument("target", help="Commit hash or branch name to rewind to.")

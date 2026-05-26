@@ -926,6 +926,42 @@ class SessionStore:
         meta["remote"] = remote
         self._write_session_meta(meta)
         write_json(merkle_path, {"root": root, "steps": len(steps)})
+        self._replace_session_steps_in_index(session_id, steps)
+
+    def _merge_new_step_into_previous(
+        self,
+        previous: dict[str, Any],
+        current: dict[str, Any],
+        current_content: str,
+        store_content: list[str],
+    ) -> dict[str, Any]:
+        merged = dict(previous)
+        content = self._step_text(previous) + current_content
+        content_hash = hash_payload({"content": content})
+        merged["content_hash"] = content_hash
+        merged["ts"] = current.get("ts", merged.get("ts"))
+        if merged.get("type") == "system_action":
+            merged["content"] = content
+        else:
+            merged.pop("content", None)
+            if merged.get("type") in store_content:
+                self._write_blob(content_hash, content)
+        return merged
+
+    def _rewrite_session_steps_unlocked(self, session_id: str, steps: list[dict[str, Any]]) -> None:
+        session_dir = self.paths.sessions_dir / session_id
+        steps_path = session_dir / "steps.jsonl"
+        merkle_path = session_dir / "merkle.sig"
+
+        root = None
+        steps_path.write_text("", encoding="utf-8")
+        for index, step in enumerate(steps, start=1):
+            step["step_num"] = index
+            append_jsonl(steps_path, step)
+            root = chain_hash(step, root)
+        write_json(merkle_path, {"root": root, "steps": len(steps)})
+
+        self._replace_session_steps_in_index(session_id, steps)
 
     def _write_config(self, config: dict[str, Any]) -> None:
         write_json(self.paths.config_path, config)
@@ -1059,6 +1095,18 @@ class SessionStore:
         )
 
         payload = step_obj.to_dict()
+
+        if existing_steps and self._can_merge_step_chunks(existing_steps[-1], payload, {"input", "reasoning", "output"}):
+            merged_payload = self._merge_new_step_into_previous(existing_steps[-1], payload, raw_content, store_content)
+            existing_steps[-1] = merged_payload
+            self._rewrite_session_steps_unlocked(session_id, existing_steps)
+            self.paths.head_path.write_text(session_id, encoding="utf-8")
+            self._upsert_session_index(
+                meta,
+                step_count=len(existing_steps),
+                risk_count=self._risk_count(session_id),
+            )
+            return merged_payload
 
         append_jsonl(steps_path, payload)
 
@@ -1202,6 +1250,17 @@ class SessionStore:
                         1 if flag.get("resolved") else 0,
                     ),
                 )
+
+    def _replace_session_steps_in_index(self, session_id: str, steps: list[dict[str, Any]]) -> None:
+        if not self.get_config().get("db_enabled", True):
+            return
+        with connect(self.paths.db_path) as conn:
+            conn.execute("DELETE FROM risk_flags WHERE step_id IN (SELECT id FROM steps WHERE session_id=?)", (session_id,))
+            conn.execute("DELETE FROM file_changes WHERE step_id IN (SELECT id FROM steps WHERE session_id=?)", (session_id,))
+            conn.execute("DELETE FROM tools WHERE step_id IN (SELECT id FROM steps WHERE session_id=?)", (session_id,))
+            conn.execute("DELETE FROM steps WHERE session_id=?", (session_id,))
+        for step in steps:
+            self._insert_step(step)
 
     def _step_count(self, session_id: str) -> int:
         try:

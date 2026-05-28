@@ -76,6 +76,7 @@ class Step:
     tool: Optional[ToolCall] = None
     file_changes: list[FileChange] = field(default_factory=list)
     commit_hash: Optional[str] = None
+    parent_step_id: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict, dropping nulls to keep JSONL clean."""
@@ -106,7 +107,8 @@ class Step:
             risk_level=data.get("risk_level", "none"),
             tool=tool,
             file_changes=file_changes,
-            commit_hash=data.get("commit_hash")
+            commit_hash=data.get("commit_hash"),
+            parent_step_id=data.get("parent_step_id")
         )
 
 @dataclass
@@ -248,6 +250,7 @@ class SessionMeta:
     risk_count: int = 0
     forked_from: Optional[str] = None
     remote: Optional[RemoteInfo] = None
+    head_step_id: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -271,7 +274,8 @@ class SessionMeta:
             step_count=data.get("step_count", 0),
             risk_count=data.get("risk_count", 0),
             forked_from=data.get("forked_from"),
-            remote=RemoteInfo.from_dict(data["remote"]) if "remote" in data else None
+            remote=RemoteInfo.from_dict(data["remote"]) if "remote" in data else None,
+            head_step_id=data.get("head_step_id")
         )
 
 @dataclass
@@ -289,6 +293,7 @@ class PushSessionMeta:
     step_count: int
     risk_count: int
     forked_from: Optional[str] = None
+    head_step_id: Optional[str] = None
 
 
 

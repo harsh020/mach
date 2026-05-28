@@ -27,7 +27,8 @@ def init_db(db_path: Path) -> None:
               step_count INTEGER DEFAULT 0,
               risk_count INTEGER DEFAULT 0,
               forked_from TEXT,
-              synced_at INTEGER
+              synced_at INTEGER,
+              head_step_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS steps (
@@ -40,6 +41,7 @@ def init_db(db_path: Path) -> None:
               content_hash TEXT,
               caused_by TEXT,
               risk_level TEXT,
+              parent_step_id TEXT,
               FOREIGN KEY(session_id) REFERENCES sessions(id)
             );
 
@@ -84,6 +86,14 @@ def init_db(db_path: Path) -> None:
             pass
         try:
             conn.execute("ALTER TABLE sessions ADD COLUMN forked_from TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN head_step_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE steps ADD COLUMN parent_step_id TEXT")
         except sqlite3.OperationalError:
             pass
 

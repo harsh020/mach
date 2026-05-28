@@ -636,6 +636,7 @@ def push_command(args: argparse.Namespace) -> None:
                     step_count=len(all_steps),
                     risk_count=risk_count,
                     forked_from=meta.get("forked_from"),
+                    head_step_id=meta.get("head_step_id"),
                 ),
                 merkle=PushMerkle(
                     root=merkle.get("root"),
@@ -1018,6 +1019,7 @@ def _format_push_step(store: SessionStore, step: dict, blobs: dict[str, str]) ->
         "tool": formatted_tool,
         "file_changes": [_format_push_file_change(store, change) for change in step.get("file_changes", [])],
         "risk_flags": step.get("risk_flags", []),
+        "parent_step_id": step.get("parent_step_id"),
     }
     return {key: value for key, value in payload.items() if value is not None}
 

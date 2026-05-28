@@ -801,7 +801,22 @@ class SessionStore:
         session_dir = self.paths.sessions_dir / session_id
         steps = read_jsonl(session_dir / "steps.jsonl")
         normalized, id_map, merged_steps, normalized_tool_hashes = self._normalize_steps(steps)
-        changed = merged_steps > 0 or normalized_tool_hashes > 0
+
+        # Check if parent_step_id is missing on any step or if head_step_id is missing in session meta.
+        # This allows the 'fix' command to act as a migration utility to backfill these fields!
+        meta = self.read_session_meta(session_id)
+        has_missing_linked_list_fields = False
+        if not meta or not meta.get("head_step_id"):
+            has_missing_linked_list_fields = True
+        else:
+            for step in steps:
+                if "parent_step_id" not in step or step["parent_step_id"] is None:
+                    # Let the first step have parent_step_id None, but any subsequent step must have parent_step_id set
+                    if step.get("step_num", 1) > 1:
+                        has_missing_linked_list_fields = True
+                        break
+
+        changed = merged_steps > 0 or normalized_tool_hashes > 0 or has_missing_linked_list_fields
 
         if apply and changed:
             self._write_normalized_session_unlocked(session_id, normalized, id_map)
@@ -904,7 +919,11 @@ class SessionStore:
 
         root = None
         steps_path.write_text("", encoding="utf-8")
+        prev_step_id = None
         for step in steps:
+            if "parent_step_id" not in step or step["parent_step_id"] is None:
+                step["parent_step_id"] = prev_step_id
+
             content = step.pop("_merged_content", None)
             step.pop("_merged_from", None)
             if content is not None:
@@ -919,6 +938,7 @@ class SessionStore:
 
             append_jsonl(steps_path, step)
             root = chain_hash(step, root)
+            prev_step_id = step["id"]
 
         remote = self._normalize_remote(dict(meta.get("remote") or {}))
         mach = remote.setdefault("mach", {})
@@ -927,6 +947,7 @@ class SessionStore:
             if value in id_map:
                 mach[key] = id_map[value]
         meta["remote"] = remote
+        meta["head_step_id"] = prev_step_id
         self._write_session_meta(meta)
         write_json(merkle_path, {"root": root, "steps": len(steps)})
         self._replace_session_steps_in_index(session_id, steps)
@@ -958,11 +979,23 @@ class SessionStore:
 
         root = None
         steps_path.write_text("", encoding="utf-8")
+        prev_step_id = None
         for index, step in enumerate(steps, start=1):
             step["step_num"] = index
+            if "parent_step_id" not in step or step["parent_step_id"] is None:
+                step["parent_step_id"] = prev_step_id
             append_jsonl(steps_path, step)
             root = chain_hash(step, root)
+            prev_step_id = step["id"]
         write_json(merkle_path, {"root": root, "steps": len(steps)})
+
+        try:
+            meta = self.read_session_meta(session_id)
+            meta["head_step_id"] = prev_step_id
+            self._write_session_meta(meta)
+            self._upsert_session_index(meta, len(steps), self._risk_count(session_id))
+        except Exception:
+            pass
 
         self._replace_session_steps_in_index(session_id, steps)
 
@@ -1096,7 +1129,8 @@ class SessionStore:
             risk_level=step_dict.get("risk_level", "none"),
             tool=tool_obj,
             file_changes=file_changes,
-            commit_hash=head_commit(self.paths.repo_root)
+            commit_hash=head_commit(self.paths.repo_root),
+            parent_step_id=prev_step_id
         )
 
         payload = step_obj.to_dict()
@@ -1123,6 +1157,8 @@ class SessionStore:
 
         self.paths.head_path.write_text(session_id, encoding="utf-8")
         self._insert_step(payload)
+        meta["head_step_id"] = step_id
+        self._write_session_meta(meta)
         self._upsert_session_index(
             meta,
             step_count=step_num,
@@ -1147,8 +1183,8 @@ class SessionStore:
                 """
                 INSERT INTO sessions (
                   id, started_at, ended_at, agent, branch, pre_commit, post_commit,
-                  step_count, risk_count, forked_from, synced_at, agent_session_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  step_count, risk_count, forked_from, synced_at, agent_session_id, head_step_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   started_at=excluded.started_at,
                   ended_at=excluded.ended_at,
@@ -1160,7 +1196,8 @@ class SessionStore:
                   risk_count=excluded.risk_count,
                   forked_from=excluded.forked_from,
                   synced_at=excluded.synced_at,
-                  agent_session_id=excluded.agent_session_id
+                  agent_session_id=excluded.agent_session_id,
+                  head_step_id=excluded.head_step_id
                 """,
                 (
                     meta["id"],
@@ -1175,6 +1212,7 @@ class SessionStore:
                     meta.get("forked_from"),
                     (meta.get("remote") or {}).get("mach", {}).get("last_pushed_ts"),
                     meta.get("agent_session_id"),
+                    meta.get("head_step_id"),
                 ),
             )
 
@@ -1185,8 +1223,10 @@ class SessionStore:
             conn.execute(
                 """
                 INSERT INTO steps (
-                  id, session_id, step_num, ts, type, content, content_hash, caused_by, risk_level
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  id, session_id, step_num, ts, type, content, content_hash, caused_by, risk_level, parent_step_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  parent_step_id=excluded.parent_step_id
                 """,
                 (
                     payload["id"],
@@ -1198,6 +1238,7 @@ class SessionStore:
                     payload.get("content_hash"),
                     canonical_json(payload.get("caused_by", [])),
                     payload.get("risk_level", "none"),
+                    payload.get("parent_step_id"),
                 ),
             )
 

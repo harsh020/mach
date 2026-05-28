@@ -288,6 +288,8 @@ class PushSessionMeta:
     post_commit: Optional[str]
     step_count: int
     risk_count: int
+    forked_from: Optional[str] = None
+
 
 
 @dataclass

@@ -116,7 +116,7 @@ class SessionStore:
             agent_session_id=agent_session_id,
             forked_from=None,
         ).to_dict()
-        write_json(session_dir / "meta.json", meta)
+        self._write_session_meta(meta)
         write_json(session_dir / "merkle.sig", {"root": None, "steps": 0})
         (session_dir / "steps.jsonl").touch()
         self.paths.head_path.write_text(session_id, encoding="utf-8")
@@ -569,7 +569,7 @@ class SessionStore:
                 root = chain_hash(cloned, root)
             if not cloned_steps:
                 (clone_dir / "steps.jsonl").touch()
-            write_json(clone_dir / "meta.json", cloned_meta)
+            self._write_session_meta(cloned_meta)
             write_json(clone_dir / "merkle.sig", {"root": root, "steps": len(cloned_steps)})
 
             self.paths.head_path.write_text(clone_id, encoding="utf-8")
@@ -692,7 +692,7 @@ class SessionStore:
                 root = chain_hash(cloned, root)
             if not cloned_steps:
                 (clone_dir / "steps.jsonl").touch()
-            write_json(clone_dir / "meta.json", cloned_meta)
+            self._write_session_meta(cloned_meta)
             write_json(clone_dir / "merkle.sig", {"root": root, "steps": len(cloned_steps)})
 
             self.paths.head_path.write_text(clone_id, encoding="utf-8")
@@ -792,7 +792,10 @@ class SessionStore:
             }
 
     def read_session_meta(self, session_id: str) -> dict[str, Any]:
-        return read_json(self.paths.sessions_dir / session_id / "meta.json")
+        meta = read_json(self.paths.sessions_dir / session_id / "meta.json")
+        if meta and "remote" in meta:
+            meta["remote"] = self._normalize_remote(dict(meta.get("remote") or {}))
+        return meta
 
     def _fix_session_chunks_unlocked(self, session_id: str, *, apply: bool) -> dict[str, Any]:
         session_dir = self.paths.sessions_dir / session_id
@@ -967,6 +970,8 @@ class SessionStore:
         write_json(self.paths.config_path, config)
 
     def _write_session_meta(self, meta: dict[str, Any]) -> None:
+        if "remote" in meta:
+            meta["remote"] = self._normalize_remote(dict(meta.get("remote") or {}))
         write_json(self.paths.sessions_dir / meta["id"] / "meta.json", meta)
 
     def _read_agent_sessions(self) -> dict[str, str]:

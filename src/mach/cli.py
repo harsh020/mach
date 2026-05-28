@@ -635,6 +635,7 @@ def push_command(args: argparse.Namespace) -> None:
                     post_commit=meta.get("post_commit"),
                     step_count=len(all_steps),
                     risk_count=risk_count,
+                    forked_from=meta.get("forked_from"),
                 ),
                 merkle=PushMerkle(
                     root=merkle.get("root"),

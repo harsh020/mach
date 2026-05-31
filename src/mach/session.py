@@ -538,6 +538,11 @@ class SessionStore:
                 if not mapped and cloned["step_num"] > 1:
                     mapped = [cloned_steps[cloned["step_num"] - 2]["id"]]
                 cloned["caused_by"] = mapped
+                
+                # Also map parent_step_id to the cloned step's parent
+                old_parent = cloned.get("parent_step_id")
+                if old_parent:
+                    cloned["parent_step_id"] = id_map.get(old_parent, old_parent)
 
             mach_state = remote.setdefault("mach", {})
             mach_state.update({
@@ -561,6 +566,7 @@ class SessionStore:
                 "post_commit": None,
                 "forked_from": source_session_id,
                 "remote": remote,
+                "head_step_id": last_inherited_step_id,
             })
 
             root = None
@@ -648,6 +654,7 @@ class SessionStore:
                     tool=ToolCall.from_dict(tool_data) if isinstance(tool_data, dict) else None,
                     file_changes=[FileChange.from_dict(fc) for fc in fc_data],
                     commit_hash=step.get("commit_hash"),
+                    parent_step_id=step.get("parent_step_id"),
                 ).to_dict()
                 cloned["_original_caused_by"] = caused_by
                 cloned_steps.append(cloned)
@@ -659,6 +666,11 @@ class SessionStore:
                 if not mapped and cloned["step_num"] > 1:
                     mapped = [cloned_steps[cloned["step_num"] - 2]["id"]]
                 cloned["caused_by"] = mapped
+
+                # Also map parent_step_id to the cloned step's parent
+                old_parent = cloned.get("parent_step_id")
+                if old_parent:
+                    cloned["parent_step_id"] = id_map.get(old_parent, old_parent)
 
             mach_state = remote.setdefault("mach", {})
             mach_state.update({
@@ -684,6 +696,7 @@ class SessionStore:
                 status="active",
                 agent_session_id=details.agent_session_id,
                 forked_from=source_session_id,
+                head_step_id=last_inherited_step_id,
             ).to_dict()
 
             root = None
